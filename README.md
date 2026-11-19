@@ -7,7 +7,8 @@
 
 This is an implementation of a full sensor-modelling visual intertial bundle adjustment, designed to provide the
 highest level of optimization of device states for Aria Gen1/Gen2 glasses. As a tool, it allows to reoptimize
-estimates on recordings data. Since it works with a very dense problem formulation, you can expect to be able
+estimates on recordings data. Other camera/IMU rigs can be used by providing the inputs in the same format (see
+[Other devices](#other-devices-tum-vi-and-slam-dunk-results)). Since it works with a very dense problem formulation, you can expect to be able
 to optimize up to 20m-30m of Aria recording.
 
 ![](https://github.com/facebookresearch/visual_inertial_bundle_adjustment/raw/refs/heads/main/docs/img/gui_animation.gif)
@@ -108,6 +109,21 @@ python -m save_observations --output $VIBA_INPUT_DIR \
        --vrs $VRS \
        --mps-path $MPS_DATA
 ```
+
+### Other devices: TUM-VI and SLAM Dunk results
+
+`tools/slamdunk_to_viba` converts a run of SLAM Dunk (Van Meter and Paul, 2026) on a
+[TUM-VI](https://cvg.cit.tum.de/data/datasets/visual-inertial-dataset) sequence into VIBA's input (stereo
+equidistant fisheye cameras, one IMU), initialized either from the state SLAM Dunk's global bundle adjustment starts
+from, or from its result. `compare.sh` runs both and evaluates them against SLAM Dunk's own optimizer:
+
+```
+tools/slamdunk_to_viba/compare.sh room1 run2 /tmp/viba_cmp      # see the script for the paths it uses
+```
+
+`tools/viba_input` has converters for other sources (EuRoC / TUM-VI feature tracks with an initial trajectory,
+COLMAP models with IMU data), a consistency check of VIBA inputs and a driver of experiments over datasets and
+camera models, see [its README](tools/viba_input/README.md).
 
 ## How to build
 
