@@ -36,7 +36,19 @@ online_calibration.jsonl   # online calibration (obtained from MPS)
 open_loop_trajectory.csv   # open-loop trajectory (obtained from MPS)
 session_observations.csv   # recording observation (tracking points + SLAM loop-closing points)
 vrs_source_info.json       # description of camera/imu layout during SLAM (indices in session_observations.csv)
+imu_noise.json             # (optional) IMU noise model per IMU label, overriding the defaults (fitting Aria)
 ```
+
+Notes on the formats:
+* `session_observations.csv`: the column `capture_timestamp_ns` holds **microseconds** (as the tracking timestamps
+  of the trajectory and online calibration). The name is kept for compatibility.
+* `imu_noise.json`, example (scalars apply to all three axes, arrays give per-axis values):
+  `{"imu0": {"accel_sample_variance": 1.57e-3, "gyro_sample_variance": 5.1e-6,
+  "accel_bias_random_walk_variance_per_sec": 7.4e-7, "gyro_bias_random_walk_variance_per_sec": 4.8e-10}}`.
+  Other supported fields: `accel_bias_turnon_std`, `gyro_bias_turnon_std`, `accel_scale_turnon_std`,
+  `gyro_scale_turnon_std`.
+* Camera models supported in calibration files: `FisheyeRadTanThinPrism` (Fisheye624), `Fisheye62`,
+  `KannalaBrandtK3` (equidistant fisheye, as Kalibr's `equidistant`), `Linear` (pinhole), `Spherical`.
 
 While outputs in $OUTPUT_DIR are:
 
@@ -54,9 +66,10 @@ the same data, just in different file format for convenience.
 All the data which are not coming from MPS can be recovered from VRS file and running Colmap pipeline.
 
 * The inputs `factory_calibration.json` and `imu_samples_*.csv` can be extracted from a VRS file running
+  (requires `pip install projectaria-tools`)
 
 ```
-build/interfaces/ark/process_vrs -i $VRS -o $VIBA_INPUT_DIR
+python3 tools/process_vrs/process_vrs.py -i $VRS -o $VIBA_INPUT_DIR
 ```
 
 * The `session_observations.csv` and `vrs_source_info.json` can be obtained using the stripped-down Python library
@@ -83,11 +96,15 @@ python -m save_observations --output $VIBA_INPUT_DIR \
 
 ## How to build
 
-Make sure the git submodules in `deps/baspacho` and `deps/projectaria_tools` are populated. If not:
+The only git submodule is `deps/baspacho`; populate it if needed:
 
 ```
-git submodule update --recursive
+git submodule update --init --recursive
 ```
+
+All other dependencies (Eigen, Sophus, CLI11, nlohmann-json, dispenso, googletest, and for the GUI sokol, imgui and
+implot) are downloaded by CMake. fmt is used from the system if found, otherwise downloaded. BLAS (OpenBLAS) is
+required by BaSpaCho.
 
 ### Using Pixi package manager (Linux/Mac)
 
@@ -106,28 +123,28 @@ pixi run build
 Install system deps, on Fedora:
 
 ```
-dnf install opus-devel fmt-devel boost-devel lz4-devel \
-    xxhash-devel turbojpeg-devel openblas-devel gtest-devel
+dnf install fmt-devel openblas-devel
 ```
 
 Install system deps, on Ubuntu:
 
 ```
-sudo apt-get install -y \
-  libopus-dev libfmt-dev libboost-all-dev liblz4-dev libxxhash-dev \
-  libturbojpeg0-dev libopenblas-dev libgtest-dev cmake build-essential
+sudo apt-get install -y libfmt-dev libopenblas-dev cmake build-essential
 ```
+
+For the GUI app (`ark_vi_ba_gui`) also OpenGL and X11 development packages are needed (Ubuntu:
+`libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev`).
 
 Configure with CMake:
 
 ```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 Build:
 
 ```
-cmake --build build -- -j16
+cmake --build build -- -j32
 ```
 
 (Optional) Run Tests:
@@ -167,3 +184,6 @@ are used with all visual observations.
 ## License
 
 This project is released under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+The camera projection models in `lib/calibration` are derived from
+[projectaria_tools](https://github.com/facebookresearch/projectaria_tools) and keep its Apache 2.0 license headers.

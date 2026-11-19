@@ -1,0 +1,3 @@
+add_executable(TestCameraProjection TestCameraProjection.cpp)
+target_link_libraries(TestCameraProjection calibration gtest_main)
+gtest_discover_tests(TestCameraProjection)

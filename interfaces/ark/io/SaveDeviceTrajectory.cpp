@@ -8,6 +8,9 @@
 // @lint-ignore-every CLANGTIDY facebook-hte-DetailCall
 #include <io/SaveDeviceTrajectory.h>
 
+#include <iomanip>
+#include <limits>
+
 #define DEFAULT_LOG_CHANNEL "ViBa::SaveDeviceTrajectory"
 #include <logging/Log.h>
 
@@ -39,10 +42,12 @@ constexpr std::array<const char*, 20> kOpenLoopTrajectoryColumns = {
 void saveOpenLoopTrajectory(
     const SingleSessionProblem& prob,
     const SessionData& fData,
+    const Matcher& matcher,
     const std::filesystem::path& outputPath) {
   auto rigIndices = prob.sortedRigIndices();
 
   std::ofstream ofs(outputPath);
+  ofs << std::setprecision(std::numeric_limits<double>::max_digits10);
   for (size_t i = 0; i < kOpenLoopTrajectoryColumns.size(); i++) {
     ofs << (i == 0 ? "" : ",") << kOpenLoopTrajectoryColumns[i];
   }
@@ -51,7 +56,7 @@ void saveOpenLoopTrajectory(
   const SE3& T_bodyImu_device = fData.slamInfo.T_bodyImu_device;
   for (int64_t rigIndex : rigIndices) {
     const auto& rigVar = prob.inertialPose(rigIndex);
-    const auto& inputRig = fData.inertialPoses.at(rigIndex);
+    const auto& inputRig = fData.inertialPoses.at(matcher.rigIndexToEvolvingStateIndex.at(rigIndex));
 
     SE3 T_odometry_device = rigVar.T_bodyImu_world.value.inverse() * T_bodyImu_device;
     Vec3 t_odometry_device = T_odometry_device.translation();
@@ -117,10 +122,12 @@ constexpr std::array<const char*, 20> kCloseLoopTrajectoryColumns = {
 void saveCloseLoopTrajectory(
     const SingleSessionProblem& prob,
     const SessionData& fData,
+    const Matcher& matcher,
     const std::filesystem::path& outputPath) {
   auto rigIndices = prob.sortedRigIndices();
 
   std::ofstream ofs(outputPath);
+  ofs << std::setprecision(std::numeric_limits<double>::max_digits10);
   for (size_t i = 0; i < kCloseLoopTrajectoryColumns.size(); i++) {
     ofs << (i == 0 ? "" : ",") << kCloseLoopTrajectoryColumns[i];
   }
@@ -129,7 +136,7 @@ void saveCloseLoopTrajectory(
   const SE3& T_bodyImu_device = fData.slamInfo.T_bodyImu_device;
   for (int64_t rigIndex : rigIndices) {
     const auto& rigVar = prob.inertialPose(rigIndex);
-    const auto& inputRig = fData.inertialPoses.at(rigIndex);
+    const auto& inputRig = fData.inertialPoses.at(matcher.rigIndexToEvolvingStateIndex.at(rigIndex));
 
     SE3 T_world_device = rigVar.T_bodyImu_world.value.inverse() * T_bodyImu_device;
     Vec3 t_world_device = T_world_device.translation();

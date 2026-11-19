@@ -1,6 +1,6 @@
 [project]
 name = "VisualInertialBundleAdjustment"
-description = "Implements Visual-Inertial optimization for Aria gen1/gen2 devices"
+description = "Visual-inertial bundle adjustment (Aria gen1/gen2 devices, and generic camera rigs)"
 homepage = "https://github.com/facebookresearch/visual_inertial_bundle_adjustment"
 license = "MIT"
 channels = ["conda-forge"]
@@ -24,20 +24,7 @@ cmake = "4.0.0.*"
 cxx-compiler = "1.9.0.*"
 openblas = "*"
 
-# Install UNIT TEST dependencies
-gtest = "1.14.0.*"
-
-# Install VRS dependencies
-# - Note that some library are listed as '*' so pixi can pick the last compatible set of libraries versions
-boost = "1.84.0.*"
 fmt = "10.2.1.*"
-libjpeg-turbo = "*"
-libpng = "*"
-lz4 = "*"
-xxhash = "*"
-zlib = "*"
-libopus = "1.4*" # optional dependency
-ffmpeg = { version = "*", build = "*lgpl*" }
 
 [target.linux-64.dependencies]
 libgl-devel = "*"

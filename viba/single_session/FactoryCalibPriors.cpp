@@ -44,6 +44,12 @@ void SingleSessionAdapter::addCamIntrFactoryCalibPriors(double stdDevInflate) {
     CameraModelParam factoryModelParams =
         fData_.factoryCalibration.calib.getConvertedCameraModelParam(fIdx);
     const CameraModelParam& calib = prob_.cameraModel_at(calibIndex).var.value;
+    // the prior must have the same parametrization as the variable
+    factoryModelParams.setEstimateReadoutTime(calib.estimateReadoutTime);
+    factoryModelParams.setEstimateTimeOffset(calib.estimateTimeOffset);
+    if (calib.estimateReadoutTime && !factoryModelParams.model.getReadOutTimeSec().has_value()) {
+      factoryModelParams.model.getReadOutTimeSecMut() = calib.model.getReadOutTimeSec();
+    }
 
     // SANITY check: the first param (fx or unique focal length) should not be too far.
     // if that is the case most likely the camera calibration is incorrectly adapted to resolution
@@ -89,7 +95,7 @@ void SingleSessionAdapter::addCamExtrFactoryCalibPriors(double stdDevInflate) {
 
     VecX turnOnStdDev(6);
     turnOnStdDev.head(3).setConstant(kCamExtrinsicPosTurnonStdM);
-    turnOnStdDev.tail(3).setConstant(degreesToRadians(kCamExtrinsicRotTurnonStdRad));
+    turnOnStdDev.tail(3).setConstant(kCamExtrinsicRotTurnonStdRad);
 
     turnOnStdDev *= stdDevInflate;
     VecX H = turnOnStdDev.cwiseProduct(turnOnStdDev).cwiseInverse();

@@ -12,13 +12,9 @@
 #include <imu_types/ImuMeasurementModelParameters.h>
 #include <imu_types/ImuNoiseModelParameters.h>
 #include <point_observation/PointObservation.h>
-#include <projectaria_tools/core/calibration/CameraCalibration.h>
-#include <projectaria_tools/core/calibration/ImuMagnetometerCalibration.h>
 #include <filesystem>
 
 namespace visual_inertial_ba {
-
-using namespace projectaria::tools::calibration;
 
 using ImuMeasurement = ::imu_types::ImuMeasurement;
 using ImuNoiseModelParameters = ::imu_types::ImuNoiseModelParameters;
@@ -39,7 +35,7 @@ struct CalibrationState {
   CameraModelParam getConvertedCameraModelParam(int cameraIndex) const;
 
   // camera intrinsic, camera model parameters.
-  std::vector<CameraCalibration> camParameters;
+  std::vector<calibration::CameraCalibration> camParameters;
 
   // T_camera_imu extrinsics
   std::vector<Sophus::SE3d> T_Cam_BodyImu;

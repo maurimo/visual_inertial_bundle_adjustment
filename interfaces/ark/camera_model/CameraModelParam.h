@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <projectaria_tools/core/calibration/CameraCalibration.h>
+#include <calibration/CameraCalibration.h>
 #include <small_thing/Variable.h>
 
 namespace visual_inertial_ba {
@@ -16,7 +16,7 @@ namespace visual_inertial_ba {
 // We have to add 2: readout time and time offset
 constexpr int kMaxCamParams = 17;
 
-using namespace projectaria::tools::calibration;
+using calibration::CameraCalibration;
 
 struct CameraModelParam {
   // for internal use, used in SessionData.cpp
@@ -35,8 +35,9 @@ struct CameraModelParam {
   bool project(
       const Eigen::Vector3d& pointInCamera,
       Eigen::Ref<Eigen::Vector2d> pointPixel,
-      Eigen::Ref<Eigen::Matrix<double, 2, 3>> J_proj_cam = NullRef(),
-      Eigen::Ref<Eigen::Matrix<double, 2, Eigen::Dynamic>> J_proj_params = NullRef()) const {
+      Eigen::Ref<Eigen::Matrix<double, 2, 3>> J_proj_cam = calibration::NullRef(),
+      Eigen::Ref<Eigen::Matrix<double, 2, Eigen::Dynamic>> J_proj_params =
+          calibration::NullRef()) const {
     constexpr bool kUseAriaKitChecks = false;
     if (kUseAriaKitChecks) {
       auto maybePointPixel = model.project(pointInCamera, J_proj_cam, J_proj_params);

@@ -1,7 +1,5 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-find_package(fmt REQUIRED)
-
 add_library(preintegration
             MotionIntegral.cpp
             MotionIntegral.h

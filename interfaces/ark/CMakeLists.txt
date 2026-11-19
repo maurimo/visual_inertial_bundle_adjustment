@@ -20,7 +20,7 @@ add_library(ark_sensor_model
    rolling_shutters/RollingShutterData.h
 )
 set_property(TARGET ark_sensor_model PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ark_sensor_model mps device_calibration viba_common imu_types preintegration small_thing)
+target_link_libraries(ark_sensor_model calibration viba_common viba_logging imu_types preintegration small_thing)
 target_include_directories(ark_sensor_model PUBLIC ".")
 
 
@@ -32,9 +32,20 @@ add_library(point_observation
    point_observation/PointObservationWriter.cpp
    point_observation/PointObservationWriter.h
 )
-add_dependencies(point_observation fast-cpp-csv-parser)
 set_property(TARGET point_observation PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(point_observation PUBLIC ".")
+target_link_libraries(point_observation PRIVATE csv_reader)
+
+# Readers/writers of Aria (factory calibration) and MPS (online calibration, trajectory) files
+add_library(aria_io
+   aria_io/AriaCalibrationJson.cpp
+   aria_io/AriaCalibrationJson.h
+   aria_io/MpsReaders.cpp
+   aria_io/MpsReaders.h
+)
+set_property(TARGET aria_io PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(aria_io PUBLIC calibration nlohmann_json::nlohmann_json fmt::fmt PRIVATE csv_reader)
+target_include_directories(aria_io PUBLIC ".")
 
 
 add_library(ark_session_data
@@ -44,7 +55,7 @@ add_library(ark_session_data
     session_data/SessionData.h
 )
 set_property(TARGET ark_session_data PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ark_session_data ark_sensor_model point_observation)
+target_link_libraries(ark_session_data ark_sensor_model point_observation aria_io)
 target_include_directories(ark_session_data PUBLIC ".")
 
 add_library(ark_io
@@ -61,8 +72,6 @@ target_include_directories(ark_io PUBLIC ".")
 add_executable(ark_vi_ba main_AriaKit_ViBa.cpp)
 target_link_libraries (ark_vi_ba ark_io CLI11::CLI11)
 
-add_executable(process_vrs main_ProcessVRS.cpp)
-target_link_libraries (process_vrs vrs_data_provider vrs_utils mps imu_types CLI11::CLI11)
 
 # Check for Graphic context availability
 find_package(OpenGL)

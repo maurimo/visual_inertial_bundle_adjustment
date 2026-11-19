@@ -15,6 +15,6 @@ add_library(imu_types
   ImuMeasurement.h
   ImuNoiseModelParameters.h
 )
-add_dependencies(imu_types fast-cpp-csv-parser)
 target_include_directories(imu_types PUBLIC "../")
+target_link_libraries(imu_types PRIVATE csv_reader)
 set_property(TARGET imu_types PROPERTY POSITION_INDEPENDENT_CODE ON)

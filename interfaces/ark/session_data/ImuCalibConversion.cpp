@@ -6,11 +6,10 @@
  */
 
 #include <session_data/ImuCalibConversion.h>
-#include <iostream>
 
 namespace visual_inertial_ba {
 
-ImuMeasurementModelParameters fromProjectAriaCalibration(const ImuCalibration& calib) {
+ImuMeasurementModelParameters fromImuCalibration(const calibration::ImuCalibration& calib) {
   ImuMeasurementModelParameters retv;
   retv.accelBiasMSec2 = calib.getAccelModel().getBias();
   retv.gyroBiasRadSec = calib.getGyroModel().getBias();
@@ -21,11 +20,11 @@ ImuMeasurementModelParameters fromProjectAriaCalibration(const ImuCalibration& c
   return retv;
 }
 
-ImuCalibration toProjectAriaCalibration(
+calibration::ImuCalibration toImuCalibration(
     const ImuMeasurementModelParameters& calib,
     const std::string& label,
     const Sophus::SE3d& T_Device_Imu) {
-  return ImuCalibration(
+  return calibration::ImuCalibration(
       label,
       calib.getAccelScaleMat(),
       calib.accelBiasMSec2,

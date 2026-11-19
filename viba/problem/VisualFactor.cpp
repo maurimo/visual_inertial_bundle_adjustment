@@ -233,8 +233,6 @@ void SingleSessionProblem::addVisualFactor(
   int64_t factorIndex;
 
   if (camVar.value.hasTimeOffset() || camVar.value.isRollingShutter()) {
-    XR_CHECK(rigIndex);
-
     const auto& rsData = findOrDie(rigToRSData_, rigIndex);
     std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
         RollingShutterVisualFactor(projBaseRes, sqrtH_BaseRes, rsData),

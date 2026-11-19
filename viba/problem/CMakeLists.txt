@@ -4,16 +4,10 @@
 
 # problem, built with ark interface
 add_library(ark_problem
-    BaseMapVisualFactor.h
     Histograms.h
-    MultiSessionHistogramImpl.h
-    MultiSessionProblem.h
-    MultiSessionProblemImpl.h
     PointRefinement.h
     SingleSessionProblem.h
-    Stats.h
     Types.h
-    BaseMapVisualFactor.cpp
     Histograms.cpp
     InertialFactor.cpp
     OmegaPriorFactor.cpp
@@ -21,7 +15,6 @@ add_library(ark_problem
     PriorFactor.cpp
     RandomWalkFactor.cpp
     SingleSessionProblem.cpp
-    Stats.cpp
     VisualFactor.cpp
 )
 set_property(TARGET ark_problem PROPERTY POSITION_INDEPENDENT_CODE ON)

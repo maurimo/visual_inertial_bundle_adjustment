@@ -164,7 +164,7 @@ void Matcher::buildIndices(SessionData& fData, bool verbose) {
     auto it2 = std::find(
         fData.onlineCalibration.imuLabels.begin(), fData.onlineCalibration.imuLabels.end(), label);
     XR_CHECK(
-        it2 != fData.onlineCalibration.cameraSerialNumbers.end(),
+        it2 != fData.onlineCalibration.imuLabels.end(),
         "Imu label number not found in online calibration: {}",
         label);
     slamImuIndexToOnlineCalib.push_back(

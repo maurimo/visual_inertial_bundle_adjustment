@@ -9,7 +9,9 @@
 
 #include <preintegration/CompensateJac.h>
 
+#include <fmt/format.h>
 #include <iostream>
+#include <stdexcept>
 
 namespace visual_inertial_ba::preintegration {
 
@@ -49,13 +51,17 @@ void enumIntegrationSteps(
   const int64_t gyroStartIndex = measIndex_GT(meas, gyroTimeStartNs + kMarginNs);
   const int64_t gyroEndIndex = measIndex_GT(meas, gyroTimeEndNs - kMarginNs);
   if (gyroStartIndex <= 0) {
-    throw "enumIntegrationSteps: gyro index, not enough margin at beginning of interval";
+    throw std::runtime_error(fmt::format(
+        "enumIntegrationSteps: no gyro measurement before interval start (t={} ns)",
+        gyroTimeStartNs));
   }
 
   const int64_t accelStartIndex = measIndex_GT(meas, accelTimeStartNs + kMarginNs);
   const int64_t accelEndIndex = measIndex_GT(meas, accelTimeEndNs - kMarginNs);
   if (accelStartIndex <= 0) {
-    throw "enumIntegrationSteps: accel index, not enough margin at beginning of interval";
+    throw std::runtime_error(fmt::format(
+        "enumIntegrationSteps: no accel measurement before interval start (t={} ns)",
+        accelTimeStartNs));
   }
 
   int64_t prevTimeStamp = refTimeStartNs;

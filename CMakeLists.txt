@@ -5,24 +5,19 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.24)
 
-# when HEAVY DEBUG is required:
-# add_compile_options(-fsanitize=address)
-# add_link_options(-fsanitize=address)
-# set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # static
-add_definitions(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
-
-# Notice: flags must be IDENTICAL to those in ProjectAria tools, to avoid ABI issues
+# Eigen without vectorization/alignment requirements (simpler, and keeps results reproducible
+# with earlier versions of this project).
 add_compile_definitions(
   EIGEN_DONT_VECTORIZE
   EIGEN_DONT_ALIGN
 )
 
-# set the project name
 project(VisualInertialBundleAdjustment CXX)
 set(CMAKE_CXX_STANDARD 17)
-set(WST_CXX_FLAGS -Wall -Wextra -pedantic) # -O1 -g -fsanitize=address -static-libsan)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 message("* Build type: " ${CMAKE_BUILD_TYPE})
 
@@ -32,106 +27,77 @@ set(VIBA_BUILD_TESTS ON CACHE BOOL "If on (default), tests are build")
 if(NOT WIN32)
   string(ASCII 27 Esc)
   set(ColourReset "${Esc}[m")
-  set(Red "${Esc}[31m")
-  set(Green "${Esc}[32m")
-  set(Yellow "${Esc}[33m")
-  set(Blue "${Esc}[34m")
-  set(Magenta "${Esc}[35m")
   set(Cyan "${Esc}[36m")
-  set(White "${Esc}[37m")
 endif()
 
-# use fetchcontent to download dependencies
 include(FetchContent)
 cmake_policy(SET CMP0077 NEW)
-
+cmake_policy(SET CMP0135 NEW)
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
-  cmake_policy(SET CMP0167 OLD) # do not complain about FindBoost
   cmake_policy(SET CMP0169 OLD) # do not complain about FetchContent_Populate
-endif()
-
-if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
-  cmake_policy(SET CMP0135 NEW)
 endif()
 
 # prefer STATIC
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-# Main dependency: ProjectAria tools, used for VRS, MPS data loading and calibration types
-message("${Cyan}=====================[ ProjectAria-Tools ]============================${ColourReset}")
-add_subdirectory(deps/projectaria_tools)
-
-if(false)
-  # CSV Pasters
-  message("${Cyan}====================[ Fast-CPP-CSV-Parser ]===========================${ColourReset}")
-  include(ExternalProject)
-  ExternalProject_Add(
-    fast-cpp-csv-parser
-    GIT_REPOSITORY https://github.com/ben-strasser/fast-cpp-csv-parser.git
-    GIT_TAG origin/master
-    SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/fast-cpp-csv-parser"
-    # disable following, since it is not needed
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND ""
-    INSTALL_DIR ""
-    INSTALL_COMMAND ""
-  )
-
-  # CLI11
-  message("${Cyan}===========================[ CLI11 ]==================================${ColourReset}")
-
-  add_subdirectory(deps/CLI11)
-  set(CLI11_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CLI11/include")
-  set(CLI11_LIBRARY cli11)
-  link_directories("${CMAKE_CURRENT_BINARY_DIR}/deps/CLI11")
-
-  message("* CLI11 Include Dir = " ${CLI11_INCLUDE_DIR})
-  message("* CLI11 Libraries = " ${CLI11_LIBRARY})
-
-  # Fmt
-  message("${Cyan}==============================[ Fmt ]===================================${ColourReset}")
-  add_subdirectory(deps/fmt)
-
-  set(FMT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/fmt/include")
-  set(FMT_LIBRARY fmt)
-  set_property(TARGET fmt PROPERTY POSITION_INDEPENDENT_CODE ON)
-  link_directories("${CMAKE_CURRENT_BINARY_DIR}/deps/fmt")
-endif()
-
-# eigen
+# Eigen (header only). Pinned to the version effectively used by earlier versions of this
+# project (fetched by projectaria_tools, which took precedence over the one declared here).
 message("${Cyan}=============================[ Eigen ]==================================${ColourReset}")
 FetchContent_Declare(
   eigen
-  URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
-  EXCLUDE_FROM_ALL
+  URL https://gitlab.com/libeigen/eigen/-/archive/19cacd3ecb9dab73c2dd7bc39d9193e06ba92bdd/eigen-19cacd3ecb9dab73c2dd7bc39d9193e06ba92bdd.tar.gz
 )
 FetchContent_GetProperties(eigen)
-
 if(NOT eigen_POPULATED)
   FetchContent_Populate(eigen)
 endif()
-
 message("* Eigen Source = " ${eigen_SOURCE_DIR})
-message("* Eigen Library Dir = " ${eigen_BINARY_DIR})
-include_directories(${eigen_SOURCE_DIR})
+include_directories(SYSTEM ${eigen_SOURCE_DIR})
 
-# Sophus (only needed for BA problem in examples/benchmarks)
+# Sophus (header only), same remark as for Eigen.
 message("${Cyan}=============================[ Sophus ]=================================${ColourReset}")
 FetchContent_Declare(
   sophus
-  URL https://github.com/strasdat/Sophus/archive/refs/tags/1.24.6.zip
-  EXCLUDE_FROM_ALL
+  URL https://github.com/strasdat/Sophus/archive/refs/tags/1.22.10.tar.gz
 )
 FetchContent_GetProperties(sophus)
-
 if(NOT sophus_POPULATED)
   FetchContent_Populate(sophus)
 endif()
-
 message("* Sophus Source = " ${sophus_SOURCE_DIR})
-message("* Sophus Library Dir = " ${sophus_BINARY_DIR})
-include_directories(${sophus_SOURCE_DIR})
+include_directories(SYSTEM ${sophus_SOURCE_DIR})
 add_compile_definitions(SOPHUS_USE_BASIC_LOGGING=1)
+
+# fmt (system package if available)
+message("${Cyan}==============================[ fmt ]===================================${ColourReset}")
+find_package(fmt QUIET)
+if(NOT fmt_FOUND)
+  FetchContent_Declare(fmt URL https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.tar.gz)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  FetchContent_MakeAvailable(fmt)
+  unset(CMAKE_POSITION_INDEPENDENT_CODE)
+  message("* fmt Source = " ${fmt_SOURCE_DIR})
+else()
+  message("* fmt found in: " ${fmt_DIR})
+endif()
+
+# CLI11 (header only)
+message("${Cyan}=============================[ CLI11 ]==================================${ColourReset}")
+FetchContent_Declare(cli11 URL https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.4.2.tar.gz)
+set(CLI11_PRECOMPILED OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(cli11)
+
+# nlohmann json (header only)
+message("${Cyan}=========================[ nlohmann-json ]==============================${ColourReset}")
+FetchContent_Declare(
+  nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
 
 # dispenso for multithreading
 message("${Cyan}============================[ dispenso ]================================${ColourReset}")
@@ -253,8 +219,6 @@ include_directories("${PROJECT_SOURCE_DIR}/deps")
 if(VIBA_BUILD_TESTS)
   enable_testing()
 endif()
-
-include_directories("${CMAKE_BINARY_DIR}/_deps") # for the CSV parser, be able to include <fast-cpp-csv-parser/csv.h>
 
 add_subdirectory("lib")
 

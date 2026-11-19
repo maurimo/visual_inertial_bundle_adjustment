@@ -10,11 +10,12 @@
 #include <imu_types/ImuDataReader.h>
 #include <nlohmann/json.hpp>
 #include <point_observation/PointObservationReader.h>
-#include <projectaria_tools/core/calibration/loader/DeviceCalibrationJson.h>
-#include <projectaria_tools/core/mps/OnlineCalibrationsReader.h>
-#include <projectaria_tools/core/mps/TrajectoryReaders.h>
+#include <aria_io/AriaCalibrationJson.h>
+#include <aria_io/MpsReaders.h>
 #include <session_data/ImuCalibConversion.h>
+#include <fstream>
 #include <iostream>
+#include <map>
 
 #define DEFAULT_LOG_CHANNEL "ViBa::SessionData"
 #include <logging/Checks.h>
@@ -22,20 +23,42 @@
 
 namespace visual_inertial_ba {
 
-using namespace projectaria::tools;
-
-#define USE_OPEN_LOOP 1
+using calibration::CameraCalibration;
 
 constexpr const char* kVrsSourceInfo = "vrs_source_info.json";
 constexpr const char* kOnlineCalibration = "online_calibration.jsonl";
 constexpr const char* kFactoryCalibration = "factory_calibration.json";
 constexpr const char* kPointObservations = "session_observations.csv";
 constexpr const char* kImuSamplesPattern = "imu_samples_{}.csv";
-#if USE_OPEN_LOOP
 constexpr const char* kOpenLoopTrajectory = "open_loop_trajectory.csv";
-#else
-constexpr const char* kClosedLoopTrajectory = "closed_loop_framerate_trajectory.csv";
-#endif
+constexpr const char* kImuNoise = "imu_noise.json"; // optional
+
+// Sets the fields present in the json object, eg {"accel_sample_variance": 1.5e-3, ...}
+// (scalars are applied to all three axes).
+static void applyImuNoiseOverrides(const nlohmann::json& j, ImuNoiseModelParameters& noise) {
+  const std::map<std::string, Eigen::Vector3d*> vec3Fields = {
+      {"accel_sample_variance", &noise.accelSampleVarianceM2Sec4},
+      {"gyro_sample_variance", &noise.gyroSampleVarianceRad2Sec2},
+      {"accel_bias_random_walk_variance_per_sec", &noise.accelBiasRandomWalkVarM2Sec4PerSec},
+      {"gyro_bias_random_walk_variance_per_sec", &noise.gyroBiasRandomWalkVarRad2Sec2PerSec},
+      {"accel_bias_turnon_std", &noise.accelBiasTurnonStdMSec2},
+      {"gyro_bias_turnon_std", &noise.gyroBiasTurnonStdRadSec},
+      {"accel_scale_turnon_std", &noise.accelScaleTurnonStd},
+      {"gyro_scale_turnon_std", &noise.gyroScaleTurnonStd},
+  };
+  for (const auto& [key, value] : j.items()) {
+    auto it = vec3Fields.find(key);
+    if (it == vec3Fields.end()) {
+      throw std::runtime_error(fmt::format("Unknown IMU noise field: '{}'", key));
+    }
+    if (value.is_array()) {
+      XR_CHECK_EQ(value.size(), 3u, "field {}", key);
+      *it->second << value[0].get<double>(), value[1].get<double>(), value[2].get<double>();
+    } else {
+      it->second->setConstant(value.get<double>());
+    }
+  }
+}
 
 template <typename T, typename F>
 static std::string showElements(const std::vector<T>& data, int nStart, int nEnd, F&& f) {
@@ -60,16 +83,6 @@ std::ostream& operator<<(std::ostream& os, const std::optional<double>& maybeVal
     os << "<none>";
   }
   return os;
-}
-
-std::string readWholeFile(const std::filesystem::path& path) {
-  std::ifstream ifs(path);
-  if (!ifs) {
-    throw std::runtime_error(fmt::format("File not found: {}", path.string()));
-  }
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  return buffer.str();
 }
 
 // CalibrationState class
@@ -105,7 +118,7 @@ void SessionData::load(
     }
   }
 
-  auto onlineCalibs = mps::readOnlineCalibration(sessDataPath / kOnlineCalibration);
+  auto onlineCalibs = aria_io::readOnlineCalibrations(sessDataPath / kOnlineCalibration);
   if (onlineCalibs.empty()) {
     throw std::runtime_error("Unable to load online calib!");
   }
@@ -129,12 +142,7 @@ void SessionData::load(
   }
 
   // load factory calibration
-  auto maybeFactoryCalib =
-      deviceCalibrationFromJson(readWholeFile(sessDataPath / kFactoryCalibration));
-  if (!maybeFactoryCalib.has_value()) {
-    throw std::runtime_error("Unable to load factory calib!");
-  }
-  const auto& factoryCalib = *maybeFactoryCalib;
+  const auto factoryCalib = aria_io::readDeviceCalibration(sessDataPath / kFactoryCalibration);
   {
     factoryCalibration.imuLabels = factoryCalib.getImuLabels();
     factoryCalibration.cameraLabels = factoryCalib.getCameraLabels();
@@ -203,7 +211,7 @@ void SessionData::load(
         throw std::runtime_error("Imu not found");
       }
       auto& calib = *maybeCalib;
-      factoryCalibration.calib.imuModelParameters.push_back(fromProjectAriaCalibration(calib));
+      factoryCalibration.calib.imuModelParameters.push_back(fromImuCalibration(calib));
       factoryCalibration.calib.T_Imu_BodyImu.push_back(
           calib.getT_Device_Imu().inverse() * maybeT_device_bodyImu.value());
 
@@ -220,6 +228,21 @@ void SessionData::load(
       } else {
         std::cout << "Unknown label: '" << factoryCalibration.imuLabels[i]
                   << "', using default IMU noise model" << std::endl;
+      }
+    }
+
+    // optional overrides of IMU noise models
+    const auto imuNoisePath = sessDataPath / kImuNoise;
+    if (std::filesystem::exists(imuNoisePath)) {
+      std::ifstream ifs(imuNoisePath);
+      const auto json = nlohmann::json::parse(ifs);
+      for (size_t i = 0; i < factoryCalibration.imuLabels.size(); i++) {
+        if (json.contains(factoryCalibration.imuLabels[i])) {
+          applyImuNoiseOverrides(
+              json[factoryCalibration.imuLabels[i]], factoryCalibration.imuNoiseModels[i]);
+          std::cout << "IMU noise model for " << factoryCalibration.imuLabels[i] << " from "
+                    << imuNoisePath.string() << std::endl;
+        }
       }
     }
   }
@@ -243,7 +266,7 @@ void SessionData::load(
       std::vector<std::string> ocImuLabels;
 
       auto& loadedCalib = onlineCalibration.calibs.emplace_back();
-      loadedCalib.timestamp_us = onlineCalib.trackingTimestamp.count();
+      loadedCalib.timestamp_us = onlineCalib.trackingTimestampUs;
       loadedCalib.camParameters = onlineCalib.cameraCalibs;
       for (const auto& camCalib : onlineCalib.cameraCalibs) {
         ocCameraSerialNumbers.push_back(camCalib.getSerialNumber());
@@ -253,7 +276,7 @@ void SessionData::load(
       }
       for (const auto& imuCalib : onlineCalib.imuCalibs) {
         ocImuLabels.push_back(imuCalib.getLabel());
-        loadedCalib.imuModelParameters.push_back(fromProjectAriaCalibration(imuCalib));
+        loadedCalib.imuModelParameters.push_back(fromImuCalibration(imuCalib));
         loadedCalib.T_Imu_BodyImu.push_back(
             (slamInfo.T_bodyImu_device * imuCalib.getT_Device_Imu()).inverse());
       }
@@ -275,9 +298,8 @@ void SessionData::load(
               << showTimeStamps(onlineCalibration.calibs) << std::endl;
   }
 
-#if USE_OPEN_LOOP
   // load trajectory
-  const auto ft = mps::readOpenLoopTrajectory(sessDataPath / kOpenLoopTrajectory);
+  const auto ft = aria_io::readOpenLoopTrajectory(sessDataPath / kOpenLoopTrajectory);
   const Sophus::SE3d T_device_bodyImu = slamInfo.T_bodyImu_device.inverse();
   for (const auto& pose : ft) {
     inertialPoses.push_back(
@@ -287,31 +309,12 @@ void SessionData::load(
                 pose.T_odometry_device.so3() *
                     pose.angularVelocity_device.cross(T_device_bodyImu.translation()),
             .omega_bodyImu = slamInfo.T_bodyImu_device.so3() * pose.angularVelocity_device,
-            .timestamp_us = pose.trackingTimestamp.count(),
-            .utc_timestamp_ns = pose.utcTimestamp.count(),
+            .timestamp_us = pose.trackingTimestampUs,
+            .utc_timestamp_ns = pose.utcTimestampNs,
             .qualityScore = pose.qualityScore,
             .sessionOrGraphUid = pose.sessionUid,
         });
   }
-#else
-  // load trajectory
-  const auto ft = mps::readClosedLoopTrajectory(sessDataPath / kClosedLoopTrajectory);
-  const Sophus::SE3d T_device_bodyImu = slamInfo.T_bodyImu_device.inverse();
-  for (const auto& pose : ft) {
-    inertialPoses.push_back(
-        InertialPoseState{
-            .T_w_IMU = pose.T_world_device * T_device_bodyImu,
-            .v_w = pose.T_world_device.so3() * pose.deviceLinearVelocity_device +
-                pose.T_world_device.so3() *
-                    pose.angularVelocity_device.cross(T_device_bodyImu.translation()),
-            .omega_bodyImu = slamInfo.T_bodyImu_device.so3() * pose.angularVelocity_device,
-            .timestamp_us = pose.trackingTimestamp.count(),
-            .utc_timestamp_ns = pose.utcTimestamp.count(),
-            .qualityScore = pose.qualityScore,
-            .sessionOrGraphUid = pose.graphUid,
-        });
-  }
-#endif
   std::cout << "Inertial poses: " << inertialPoses.size() << "\n"
             << showTimeStamps(inertialPoses) << std::endl;
 

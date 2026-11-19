@@ -7,8 +7,6 @@
 
 #include <camera_model/CameraModelParam.h>
 
-#include <projectaria_tools/core/calibration/camera_projections/CameraProjectionFormat.h>
-
 #define DEFAULT_LOG_CHANNEL "ViBa::CameraModelParam"
 #include <logging/Checks.h>
 #include <logging/Log.h>
@@ -29,18 +27,30 @@ void CameraModelParam::eachNamedDeltaComponent(
     const {
   XR_CHECK_EQ(delta.size(), ::small_thing::VarSpec<CameraModelParam>::getDynamicDataDim(*this));
 
-  XR_CHECK(
-      model.modelName() == CameraProjection::ModelType::Fisheye624,
-      "Calib field enumeration unsupported for camera type {}",
-      model.modelName());
-
-  enumFunc("1_FocalLength", delta.segment(0, 1));
-  enumFunc("2_PrincipalPt", delta.segment(1, 2));
-  enumFunc("3_Distorsion", delta.segment(3, 6));
-  enumFunc("4_Tangential", delta.segment(9, 2));
-  enumFunc("5_ThinPrism", delta.segment(11, 4));
+  using MT = calibration::CameraProjection::ModelType;
+  const int nProj = model.numProjectionParameters();
+  enumFunc(nProj == 1 || nProj == 3 ? "1_FocalLength" : "1_FocalLengths", delta.head(nProj - 2));
+  enumFunc("2_PrincipalPt", delta.segment(nProj - 2, 2));
+  switch (model.modelName()) {
+    case MT::Fisheye624:
+      enumFunc("3_Distorsion", delta.segment(3, 6));
+      enumFunc("4_Tangential", delta.segment(9, 2));
+      enumFunc("5_ThinPrism", delta.segment(11, 4));
+      break;
+    case MT::Fisheye62:
+      enumFunc("3_Distorsion", delta.segment(3, 6));
+      enumFunc("4_Tangential", delta.segment(9, 2));
+      break;
+    case MT::KannalaBrandtK3:
+      enumFunc("3_Distorsion", delta.segment(4, 4));
+      break;
+    case MT::Linear:
+    case MT::Spherical:
+      break;
+  }
+  const int nIntr = model.numParameters();
   if (estimateReadoutTime) {
-    enumFunc("6_ReadoutTime", delta.segment(15, 1));
+    enumFunc("6_ReadoutTime", delta.segment(nIntr, 1));
   }
   if (estimateTimeOffset) {
     enumFunc("7_TimeOffset", delta.tail(1));

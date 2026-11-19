@@ -9,22 +9,17 @@
 
 #include <imu_types/ImuDataFormat.h>
 
-#ifndef CSV_IO_NO_THREAD
-#define CSV_IO_NO_THREAD
-#endif
-#include <fast-cpp-csv-parser/csv.h>
+#include <csv/CsvReader.h>
+
+#include <limits>
 
 namespace imu_types {
 namespace {
-ImuMeasurements readImpl(io::CSVReader<ImuDataFormat.size()>& csv) {
-  // Read in the CSV header
-  const auto readHeader = [&](auto&&... args) { csv.read_header(io::ignore_no_column, args...); };
-  std::apply(readHeader, ImuDataFormat);
-
+ImuMeasurements readImpl(csv::Reader<ImuDataFormat.size()>& csv) {
   ImuMeasurements imuMeasVec;
   ImuMeasurement meas;
   std::string tempC; // read as string, it might be "nan"
-  while (csv.read_row(
+  while (csv.readRow(
       meas.timestampNs,
       tempC,
       meas.gyroRadSec[0],
@@ -45,12 +40,12 @@ ImuMeasurements readImpl(io::CSVReader<ImuDataFormat.size()>& csv) {
 } // namespace
 
 ImuMeasurements ImuDataReader::read(const std::filesystem::path& path) {
-  io::CSVReader<ImuDataFormat.size()> csv(path.string());
+  csv::Reader<ImuDataFormat.size()> csv(path, ImuDataFormat);
   return readImpl(csv);
 }
 
 ImuMeasurements ImuDataReader::read(const std::string& filename, std::istream& is) {
-  io::CSVReader<ImuDataFormat.size()> csv(filename, is);
+  csv::Reader<ImuDataFormat.size()> csv(filename, is, ImuDataFormat);
   return readImpl(csv);
 }
 

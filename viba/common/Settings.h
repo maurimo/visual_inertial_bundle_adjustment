@@ -21,7 +21,6 @@ namespace visual_inertial_ba {
 struct InitSettings {
   void addCommandLine(CLI::App& app);
 
-  void addCalibOverride(CLI::App& app);
 
   std::string calibConstant;
   std::string calibFactory;
@@ -59,19 +58,9 @@ struct InitSettings {
   bool simpleStats = false;
 
   double imuLossRadius = kImuErrorHuberLossWidth;
-  double imuLossCutoff = kImuErrorHuberLossWidth;
+  double imuLossCutoff = kImuErrorHuberLossCutoff;
 
   bool noRgb = false;
-};
-
-struct T3InitSettings : InitSettings {
-  void addCommandLine(CLI::App& app);
-
-  bool constBaseMap = false;
-
-  double t3MapObsLossRadius = kReprojectionErrorHuberLossWidth;
-  double t3MapObsLossCutoff = kReprojectionErrorHuberLossCutoff;
-  double t3MapObsCovInflate = 1.0;
 };
 
 struct OptimizerSettings {

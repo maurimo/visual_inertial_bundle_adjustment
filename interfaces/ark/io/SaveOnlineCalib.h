@@ -9,6 +9,7 @@
 
 #include <session_data/SessionData.h>
 #include <viba/problem/SingleSessionProblem.h>
+#include <viba/single_session/Matcher.h>
 #include <filesystem>
 
 namespace visual_inertial_ba {
@@ -16,6 +17,7 @@ namespace visual_inertial_ba {
 void saveOnlineCalib(
     const SingleSessionProblem& prob,
     const SessionData& fData,
+    const Matcher& matcher,
     const std::filesystem::path& outputPath);
 
 } // namespace visual_inertial_ba

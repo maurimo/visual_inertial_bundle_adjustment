@@ -22,51 +22,8 @@ constexpr char CalibInitArgSpec[] =
 constexpr char TrajectoryInitArgSpec[] = "pose|vel|omega|all";
 constexpr char ImuEstArgSpec[] =
     "gyro-bias|accel-bias|gyro-scale|accel-scale|gyro-nonorth|accel-nonorth|\n"
-    "  gyro-g-sensitivity|accel-axes-offset|gyro-nonlinearity|accel-nonlinearity|\n"
     "  reference-imu-time-offset|gyro-accel-time-offset|all|all-but-time-offsets|\n"
     "  all-but-biases|all-but-biases-and-scales|all-non-orths|all-time-offsets";
-
-void InitSettings::addCalibOverride(CLI::App& app) {
-  app.add_option(
-         "--calib-factory",
-         calibFactory,
-         "Set calib set to (constant) factory values. One or more comma-sep of:\n  " +
-             std::string(CalibInitArgSpec))
-      ->group("Calibration");
-  app.add_flag_function(
-         "--no-fprio",
-         [&](size_t /* something */) {
-           imuFactorCalibInflate = camIntrFactorCalibInflate = imuExtrFactorCalibInflate =
-               camExtrFactorCalibInflate = 0.0;
-         },
-         "Disable all factor calibration priors")
-      ->group("Calibration");
-  app.add_flag(
-         "--estimate-readout-time",
-         estimateReadoutTime,
-         "Estimate readout-time for rolling shutter cameras")
-      ->group("Calibration");
-  app.add_flag(
-         "--estimate-time-offset",
-         estimateTimeOffset,
-         "Estimate time-offset (only for rolling shutter cameras ATM)")
-      ->group("Calibration");
-  app.add_flag(
-         "--recompute-preint",
-         recomputedPreIntegrations,
-         "Recompute pre-integration, at every optimization step")
-      ->group("Calibration");
-  app.add_option(
-         "--imu-lrad",
-         imuLossRadius,
-         fmt::format("Radius for IMU factor loss (default: {:.02f})", kImuErrorHuberLossWidth))
-      ->group("Huber Soft Loss");
-  app.add_option(
-         "--imu-lcut",
-         imuLossCutoff,
-         fmt::format("Cutoff for IMU factor loss (default: {:.02f})", kImuErrorHuberLossCutoff))
-      ->group("Huber Soft Loss");
-}
 
 void InitSettings::addCommandLine(CLI::App& app) {
   app.add_option(
@@ -225,33 +182,6 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_flag("--verbose", verbose, "verbose: print residuals");
 
   app.add_flag("--no-rgb", noRgb, "Map KeyRigs were not constructed using RGB images");
-}
-
-void T3InitSettings::addCommandLine(CLI::App& app) {
-  InitSettings::addCommandLine(app);
-
-  app.add_flag(
-      "--const-base-map",
-      constBaseMap,
-      "Map data used as constant base map");
-
-  app.add_option(
-         "--t3map-obs-infl",
-         t3MapObsCovInflate,
-         "Inflate factor for covariances of T3Map's map point's observations")
-      ->group("Factor Weighting");
-  app.add_option(
-         "--t3map-obs-lrad",
-         t3MapObsLossRadius,
-         "Radius for T3Map's map point's observations (default: " +
-             std::to_string(kReprojectionErrorHuberLossWidth) + ")")
-      ->group("Huber Soft Loss");
-  app.add_option(
-         "--t3map-obs-lcut",
-         t3MapObsLossCutoff,
-         "Cutoff for T3Map's map point's observations (default: " +
-             std::to_string(kReprojectionErrorHuberLossCutoff) + ")")
-      ->group("Huber Soft Loss");
 }
 
 using namespace small_thing;

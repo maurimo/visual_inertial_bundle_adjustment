@@ -64,9 +64,11 @@ static void parseCalibOptionString(ImuCalibrationOptions& estOpts, const std::st
       estOpts.gyroNonOrth = estOpts.accelNonOrth = estOpts.referenceImuTimeOffset =
           estOpts.gyroAccelTimeOffset = val;
     } else if (token == "all-non-orths") {
-      estOpts.referenceImuTimeOffset = estOpts.gyroAccelTimeOffset = val;
-    } else if (token == "all-time-offsets") {
       estOpts.gyroNonOrth = estOpts.accelNonOrth = val;
+    } else if (token == "all-time-offsets") {
+      estOpts.referenceImuTimeOffset = estOpts.gyroAccelTimeOffset = val;
+    } else {
+      XR_CHECK(false, "Unknown imu-calib-estimation-options token: '{}'", token);
     }
   });
 }
@@ -88,11 +90,11 @@ static void setInertialPoseFromArgs(bool* pose, bool* vel, bool* omega, const st
 }
 
 void SingleSessionAdapter::ParamInitSettings::setTrajectoryConstants(const std::string& args) {
-  setInertialPoseFromArgs(&poseConstant, &velConstant, &poseConstant, args);
+  setInertialPoseFromArgs(&poseConstant, &velConstant, &omegaConstant, args);
 }
 
 void SingleSessionAdapter::ParamInitSettings::setTrajectoryToGt(const std::string& args) {
-  setInertialPoseFromArgs(&poseToGt, &velToGt, &poseToGt, args);
+  setInertialPoseFromArgs(&poseToGt, &velToGt, &omegaToGt, args);
 }
 
 static void setCalibFromArgs(

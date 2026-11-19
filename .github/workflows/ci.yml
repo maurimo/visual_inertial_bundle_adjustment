@@ -24,20 +24,7 @@ jobs:
           build-essential \
           g++ \
           libopenblas-dev \
-          libgtest-dev \
-          libboost-all-dev \
           libfmt-dev \
-          libjpeg-turbo8-dev \
-          libturbojpeg0-dev \
-          libpng-dev \
-          liblz4-dev \
-          libxxhash-dev \
-          zlib1g-dev \
-          libopus-dev \
-          libavcodec-dev \
-          libavformat-dev \
-          libavutil-dev \
-          libswscale-dev \
           libgl1-mesa-dev \
           libx11-dev \
           libxi-dev \
@@ -47,8 +34,7 @@ jobs:
       run: |
         cmake -S . -B build \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-          -DFFMPEG_INCLUDE_DIR=/usr/include/ffmpeg
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
     - name: Build
       run: |

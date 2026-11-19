@@ -60,7 +60,6 @@
 
 using namespace small_thing;
 using namespace visual_inertial_ba;
-using namespace projectaria::tools;
 using namespace viba_gui;
 
 // Global monitoring state
@@ -266,11 +265,7 @@ void runOptimizationThread(
           IterationData::RigCalibration rig_calib;
           rig_calib.rig_index = rig_idx;
 
-          // Get timestamp from session data (inertialPoses is a vector indexed by rig_idx)
-          if (rig_idx >= 0 && rig_idx < static_cast<int64_t>(fData.inertialPoses.size())) {
-            rig_calib.timestamp_sec =
-                fData.inertialPoses[rig_idx].timestamp_us / 1e6; // Convert microseconds to seconds
-          }
+          rig_calib.timestamp_sec = problem.inertialPose(rig_idx).timestampUs / 1e6;
 
           // IMU calibrations (try up to 4 IMUs)
           for (int64_t imu_idx = 0; imu_idx < 4; imu_idx++) {
@@ -339,9 +334,9 @@ void runOptimizationThread(
 
     if (!outputsDir.empty()) {
       std::filesystem::create_directories(outputsDir);
-      saveOnlineCalib(problem, fData, outputsDir / "online_calibration.jsonl");
-      saveOpenLoopTrajectory(problem, fData, outputsDir / "open_loop_framerate_trajectory.csv");
-      saveCloseLoopTrajectory(problem, fData, outputsDir / "closed_loop_framerate_trajectory.csv");
+      saveOnlineCalib(problem, fData, matcher, outputsDir / "online_calibration.jsonl");
+      saveOpenLoopTrajectory(problem, fData, matcher, outputsDir / "open_loop_framerate_trajectory.csv");
+      saveCloseLoopTrajectory(problem, fData, matcher, outputsDir / "closed_loop_framerate_trajectory.csv");
     }
 
   } catch (const std::exception& e) {

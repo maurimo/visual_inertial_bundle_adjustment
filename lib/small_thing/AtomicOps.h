@@ -9,6 +9,7 @@
 
 #include <Eigen/Geometry>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace small_thing {
@@ -41,13 +42,17 @@ struct IEEEMagicLock<double> {
       // to be executed *before* the lock was acquired
       retv = __atomic_exchange_n((uint64_t*)address, magicValue, __ATOMIC_ACQUIRE);
     } while (retv == magicValue);
-    return *(double*)(&retv);
+    double value;
+    std::memcpy(&value, &retv, sizeof(value));
+    return value;
   }
 
   static inline __attribute__((always_inline)) void unlock(double* address, double val) {
     // Write the original value back to the address, effectively "unlocking" the memory.
     // "RELEASE" mode means instructions coming before cannot be reschedule after the lock release.
-    __atomic_store_n((uint64_t*)address, *(uint64_t*)(&val), __ATOMIC_RELEASE);
+    uint64_t bits;
+    std::memcpy(&bits, &val, sizeof(bits));
+    __atomic_store_n((uint64_t*)address, bits, __ATOMIC_RELEASE);
   }
 };
 
@@ -66,13 +71,17 @@ struct IEEEMagicLock<float> {
       // to be executed *before* the lock was acquired
       retv = __atomic_exchange_n((uint32_t*)address, magicValue, __ATOMIC_ACQUIRE);
     } while (retv == magicValue);
-    return *(float*)(&retv);
+    float value;
+    std::memcpy(&value, &retv, sizeof(value));
+    return value;
   }
 
   static inline __attribute__((always_inline)) void unlock(float* address, float val) {
     // Write the original value back to the address, effectively "unlocking" the memory.
     // "RELEASE" mode means instructions coming before cannot be reschedule after the lock release.
-    __atomic_store_n((uint32_t*)address, *(uint32_t*)(&val), __ATOMIC_RELEASE);
+    uint32_t bits;
+    std::memcpy(&bits, &val, sizeof(bits));
+    __atomic_store_n((uint32_t*)address, bits, __ATOMIC_RELEASE);
   }
 };
 

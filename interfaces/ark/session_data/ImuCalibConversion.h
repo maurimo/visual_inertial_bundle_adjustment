@@ -8,17 +8,15 @@
 #pragma once
 
 #include <imu_types/ImuMeasurementModelParameters.h>
-#include <projectaria_tools/core/calibration/ImuMagnetometerCalibration.h>
+#include <calibration/ImuCalibration.h>
 
 namespace visual_inertial_ba {
 
-using namespace projectaria::tools::calibration;
-
 using ImuMeasurementModelParameters = ::imu_types::ImuMeasurementModelParameters;
 
-ImuMeasurementModelParameters fromProjectAriaCalibration(const ImuCalibration& calib);
+ImuMeasurementModelParameters fromImuCalibration(const calibration::ImuCalibration& calib);
 
-ImuCalibration toProjectAriaCalibration(
+calibration::ImuCalibration toImuCalibration(
     const ImuMeasurementModelParameters& calib,
     const std::string& label,
     const Sophus::SE3d& T_Device_Imu);

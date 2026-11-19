@@ -12,7 +12,7 @@
 namespace visual_inertial_ba {
 constexpr std::array<const char*, 9> PointObservationColumns = {
     "point_id",
-    "capture_timestamp_ns",
+    "capture_timestamp_ns", // NOTE: despite the name, values are in microseconds
     "camera_index",
     "projection_base_res_x",
     "projection_base_res_y",

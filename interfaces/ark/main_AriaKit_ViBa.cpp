@@ -27,7 +27,6 @@
 
 using namespace small_thing;
 using namespace visual_inertial_ba;
-using namespace projectaria::tools;
 
 int main(int argc, const char* argv[]) {
   std::filesystem::path filterPathIn;
@@ -122,11 +121,11 @@ int main(int argc, const char* argv[]) {
   if (!outputsDir.empty()) {
     std::filesystem::create_directories(outputsDir);
 
-    saveOnlineCalib(problem, fData, outputsDir / "online_calibration.jsonl");
+    saveOnlineCalib(problem, fData, matcher, outputsDir / "online_calibration.jsonl");
 
-    saveOpenLoopTrajectory(problem, fData, outputsDir / "open_loop_framerate_trajectory.csv");
+    saveOpenLoopTrajectory(problem, fData, matcher, outputsDir / "open_loop_framerate_trajectory.csv");
 
-    saveCloseLoopTrajectory(problem, fData, outputsDir / "closed_loop_framerate_trajectory.csv");
+    saveCloseLoopTrajectory(problem, fData, matcher, outputsDir / "closed_loop_framerate_trajectory.csv");
   }
 
   return 0;

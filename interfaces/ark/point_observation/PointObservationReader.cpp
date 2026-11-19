@@ -7,24 +7,17 @@
 
 #include <point_observation/PointObservationReader.h>
 
-#ifndef CSV_IO_NO_THREAD
-#define CSV_IO_NO_THREAD
-#endif
-#include <fast-cpp-csv-parser/csv.h>
+#include <csv/CsvReader.h>
 
 #include <point_observation/PointObservationFormat.h>
 
 namespace visual_inertial_ba {
 namespace {
-PointObservations readImpl(io::CSVReader<PointObservationColumns.size()>& csv) {
-  // Read in the CSV header
-  const auto readHeader = [&](auto&&... args) { csv.read_header(io::ignore_no_column, args...); };
-  std::apply(readHeader, PointObservationColumns);
-
+PointObservations readImpl(csv::Reader<PointObservationColumns.size()>& csv) {
   PointObservations trackingObservations;
 
   PointObservation tObs;
-  while (csv.read_row(
+  while (csv.readRow(
       tObs.pointId,
       tObs.captureTimestampUs,
       tObs.cameraIndex,
@@ -42,11 +35,11 @@ PointObservations readImpl(io::CSVReader<PointObservationColumns.size()>& csv) {
 } // namespace
 
 PointObservations PointObservationReader::read(const std::filesystem::path& path) {
-  io::CSVReader<PointObservationColumns.size()> csv(path.string());
+  csv::Reader<PointObservationColumns.size()> csv(path, PointObservationColumns);
   return readImpl(csv);
 }
 PointObservations PointObservationReader::read(const std::string& filename, std::istream& is) {
-  io::CSVReader<PointObservationColumns.size()> csv(filename, is);
+  csv::Reader<PointObservationColumns.size()> csv(filename, is, PointObservationColumns);
   return readImpl(csv);
 }
 } // namespace visual_inertial_ba
