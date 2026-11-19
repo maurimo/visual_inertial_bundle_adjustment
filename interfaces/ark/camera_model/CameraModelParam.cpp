@@ -41,11 +41,10 @@ void CameraModelParam::eachNamedDeltaComponent(
       enumFunc("3_Distorsion", delta.segment(3, 6));
       enumFunc("4_Tangential", delta.segment(9, 2));
       break;
-    case MT::KannalaBrandtK3:
-      enumFunc("3_Distorsion", delta.segment(4, 4));
-      break;
-    case MT::Linear:
-    case MT::Spherical:
+    default: // models with focal lengths + principal point, followed by distortion
+      if (model.numDistortionParameters() > 0) {
+        enumFunc("3_Distorsion", delta.segment(nProj, model.numDistortionParameters()));
+      }
       break;
   }
   const int nIntr = model.numParameters();

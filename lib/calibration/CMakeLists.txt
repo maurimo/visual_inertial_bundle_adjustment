@@ -11,7 +11,9 @@ add_library(calibration
   projections/FisheyeRadTanThinPrism.h
   projections/KannalaBrandtK3.h
   projections/Linear.h
+  projections/PinholeRadTan.h
   projections/Spherical.h
+  projections/UnifiedFamily.h
 )
 target_include_directories(calibration PUBLIC "../")
 set_property(TARGET calibration PROPERTY POSITION_INDEPENDENT_CODE ON)

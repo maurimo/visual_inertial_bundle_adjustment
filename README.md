@@ -47,8 +47,23 @@ Notes on the formats:
   "accel_bias_random_walk_variance_per_sec": 7.4e-7, "gyro_bias_random_walk_variance_per_sec": 4.8e-10}}`.
   Other supported fields: `accel_bias_turnon_std`, `gyro_bias_turnon_std`, `accel_scale_turnon_std`,
   `gyro_scale_turnon_std`.
-* Camera models supported in calibration files: `FisheyeRadTanThinPrism` (Fisheye624), `Fisheye62`,
-  `KannalaBrandtK3` (equidistant fisheye, as Kalibr's `equidistant`), `Linear` (pinhole), `Spherical`.
+* Camera models supported in calibration files (`Projection.Name`, parameters in `Projection.Params`):
+
+  | name | parameters | as in |
+  |---|---|---|
+  | `FisheyeRadTanThinPrism` (Fisheye624) | f, cx, cy, k0..k5, p0, p1, s0..s3 | Aria |
+  | `Fisheye62` | f, cx, cy, k0..k5, p0, p1 | Aria |
+  | `KannalaBrandtK3` | fx, fy, cx, cy, k1..k4 | Kalibr `equidistant`, Basalt `kb4`, OpenCV fisheye |
+  | `PinholeRadTan` | fx, fy, cx, cy, k1, k2, p1, p2 | Kalibr `radtan` (EuRoC), COLMAP `OPENCV` |
+  | `PinholeRadTanK3` | fx, fy, cx, cy, k1, k2, p1, p2, k3 | OpenCV 5 coefficients |
+  | `DoubleSphere` | fx, fy, cx, cy, xi, alpha | Basalt / Kalibr `ds` |
+  | `ExtendedUnified` | fx, fy, cx, cy, alpha, beta | Basalt / Kalibr `eucm` |
+  | `Unified` | fx, fy, cx, cy, alpha | Basalt `ucm` (Kalibr `omni` without distortion) |
+  | `Linear` | fx, fy, cx, cy | pinhole |
+  | `Spherical` | fx, fy, cx, cy | (no Jacobians, not usable for optimization) |
+
+  Aliases are accepted (case insensitive): `Pinhole`, `KB4`, `KannalaBrandt`, `Equidistant`, `RadTan`, `DS`,
+  `EUCM`, `UCM`. Pixel (0, 0) is the center of the top-left pixel.
 
 While outputs in $OUTPUT_DIR are:
 

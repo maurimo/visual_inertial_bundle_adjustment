@@ -19,7 +19,10 @@
 
 #include <calibration/CameraProjection.h>
 
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
+#include <type_traits>
 
 namespace calibration {
 
@@ -38,6 +41,16 @@ decltype(auto) visitModel(CameraProjection::ModelType type, F&& f) {
       return f(Fisheye624{});
     case MT::Fisheye62:
       return f(Fisheye62{});
+    case MT::PinholeRadTan:
+      return f(PinholeRadTan4{});
+    case MT::PinholeRadTanK3:
+      return f(PinholeRadTan5{});
+    case MT::DoubleSphere:
+      return f(DoubleSphereProjection{});
+    case MT::ExtendedUnified:
+      return f(ExtendedUnifiedProjection{});
+    case MT::Unified:
+      return f(UnifiedProjection{});
   }
   throw std::runtime_error("Unrecognized camera model.");
 }
@@ -139,32 +152,99 @@ void CameraProjection::subtractFromOrigin(double offsetU, double offsetV) {
       projectionVariant_);
 }
 
+const std::vector<CameraProjection::ModelType>& allModelTypes() {
+  using MT = CameraProjection::ModelType;
+  static const std::vector<MT> kAll = {
+      MT::Linear,
+      MT::Spherical,
+      MT::KannalaBrandtK3,
+      MT::Fisheye624,
+      MT::Fisheye62,
+      MT::PinholeRadTan,
+      MT::PinholeRadTanK3,
+      MT::DoubleSphere,
+      MT::ExtendedUnified,
+      MT::Unified};
+  return kAll;
+}
+
+namespace {
+// FisheyeRadTanThinPrism's kName/kDescription are declared but not defined (as upstream), so they
+// are not used here
+template <class P>
+constexpr bool isFisheyeRadTanThinPrism() {
+  return std::is_same_v<P, Fisheye624> || std::is_same_v<P, Fisheye62>;
+}
+} // namespace
+
 std::string modelTypeToString(CameraProjection::ModelType type) {
   using MT = CameraProjection::ModelType;
   switch (type) {
-    case MT::Linear:
-      return "Linear";
-    case MT::Spherical:
-      return "Spherical";
-    case MT::KannalaBrandtK3:
-      return "KannalaBrandtK3";
     case MT::Fisheye624:
-      return "FisheyeRadTanThinPrism";
+      return "FisheyeRadTanThinPrism"; // name in Aria calibration files
     case MT::Fisheye62:
       return "Fisheye62";
+    default:
+      return visitModel(type, [](auto proj) -> std::string {
+        using P = decltype(proj);
+        if constexpr (isFisheyeRadTanThinPrism<P>()) {
+          return "";
+        } else {
+          return P::kName;
+        }
+      });
   }
-  return "Unknown";
+}
+
+std::string modelTypeDescription(CameraProjection::ModelType type) {
+  using MT = CameraProjection::ModelType;
+  switch (type) {
+    case MT::Fisheye624:
+      return "fx, cx, cy, k_0, k_1, k_2, k_3, k_4, k_5, p_0, p_1, s_0, s_1, s_2, s_3";
+    case MT::Fisheye62:
+      return "fx, cx, cy, k_0, k_1, k_2, k_3, k_4, k_5, p_0, p_1";
+    default:
+      return visitModel(type, [](auto proj) -> std::string {
+        using P = decltype(proj);
+        if constexpr (isFisheyeRadTanThinPrism<P>()) {
+          return "";
+        } else {
+          return P::kDescription;
+        }
+      });
+  }
 }
 
 CameraProjection::ModelType modelTypeFromString(const std::string& name) {
   using MT = CameraProjection::ModelType;
-  for (MT t : {MT::Linear, MT::Spherical, MT::KannalaBrandtK3, MT::Fisheye624, MT::Fisheye62}) {
-    if (modelTypeToString(t) == name) {
+  auto lower = [](std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    return s;
+  };
+  const std::string key = lower(name);
+  for (MT t : allModelTypes()) {
+    if (lower(modelTypeToString(t)) == key) {
       return t;
     }
   }
-  if (name == "Fisheye624") {
-    return MT::Fisheye624;
+  static const std::vector<std::pair<std::string, MT>> kAliases = {
+      {"fisheye624", MT::Fisheye624},
+      {"pinhole", MT::Linear},
+      {"kannalabrandt", MT::KannalaBrandtK3},
+      {"kannalabrandt4", MT::KannalaBrandtK3},
+      {"kb4", MT::KannalaBrandtK3},
+      {"equidistant", MT::KannalaBrandtK3},
+      {"radtan", MT::PinholeRadTan},
+      {"pinholeradtan4", MT::PinholeRadTan},
+      {"pinholeradtan5", MT::PinholeRadTanK3},
+      {"ds", MT::DoubleSphere},
+      {"eucm", MT::ExtendedUnified},
+      {"ucm", MT::Unified},
+  };
+  for (const auto& [alias, t] : kAliases) {
+    if (alias == key) {
+      return t;
+    }
   }
   throw std::runtime_error("Unknown camera model name: '" + name + "'");
 }

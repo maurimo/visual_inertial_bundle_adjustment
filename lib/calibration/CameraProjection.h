@@ -23,11 +23,14 @@
 #include <calibration/projections/FisheyeRadTanThinPrism.h>
 #include <calibration/projections/KannalaBrandtK3.h>
 #include <calibration/projections/Linear.h>
+#include <calibration/projections/PinholeRadTan.h>
 #include <calibration/projections/Spherical.h>
+#include <calibration/projections/UnifiedFamily.h>
 
 #include <Eigen/Core>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace calibration {
 
@@ -41,6 +44,11 @@ class CameraProjection {
     KannalaBrandtK3, ///< Kannala-Brandt (equidistant fisheye): fx, fy, cx, cy, k0..k3
     Fisheye624, ///< f, cx, cy, k0..k5, p0, p1, s0..s3
     Fisheye62, ///< f, cx, cy, k0..k5, p0, p1
+    PinholeRadTan, ///< pinhole + radial-tangential (Kalibr radtan): fx, fy, cx, cy, k1, k2, p1, p2
+    PinholeRadTanK3, ///< OpenCV 5-coefficient model: fx, fy, cx, cy, k1, k2, p1, p2, k3
+    DoubleSphere, ///< Double Sphere (Usenko et al. 2018): fx, fy, cx, cy, xi, alpha
+    ExtendedUnified, ///< Extended Unified (EUCM): fx, fy, cx, cy, alpha, beta
+    Unified, ///< Unified (UCM), Basalt's parametrization: fx, fy, cx, cy, alpha
   };
 
   CameraProjection() = default;
@@ -82,15 +90,26 @@ class CameraProjection {
       SphericalProjection,
       KannalaBrandtK3Projection,
       Fisheye624,
-      Fisheye62>;
+      Fisheye62,
+      PinholeRadTan4,
+      PinholeRadTan5,
+      DoubleSphereProjection,
+      ExtendedUnifiedProjection,
+      UnifiedProjection>;
 
   ModelType modelName_ = ModelType::Linear;
   Eigen::VectorXd projectionParams_;
   ProjectionVariant projectionVariant_;
 };
 
+/// All model types.
+const std::vector<CameraProjection::ModelType>& allModelTypes();
 /// Name used in calibration files ("FisheyeRadTanThinPrism", "KannalaBrandtK3", ...).
 std::string modelTypeToString(CameraProjection::ModelType type);
+/// Parameter list, eg "fx, fy, cx, cy, xi, alpha".
+std::string modelTypeDescription(CameraProjection::ModelType type);
+/// Accepts the names of modelTypeToString and common aliases (case insensitive), eg "Pinhole",
+/// "KannalaBrandt4", "kb4", "Equidistant", "RadTan", "ds", "eucm", "ucm".
 /// Throws on unknown names.
 CameraProjection::ModelType modelTypeFromString(const std::string& name);
 

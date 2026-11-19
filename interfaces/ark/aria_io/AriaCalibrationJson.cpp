@@ -82,18 +82,7 @@ nlohmann::json se3ToJson(const Sophus::SE3d& T) {
 }
 
 std::string projectionDescription(CameraProjection::ModelType type) {
-  switch (type) {
-    case CameraProjection::ModelType::Fisheye624:
-      return "fx, cx, cy, k_0, k_1, k_2, k_3, k_4, k_5, p_0, p_1, s_0, s_1, s_2, s_3";
-    case CameraProjection::ModelType::KannalaBrandtK3:
-      return "fx, fy, cx, cy, kb0, kb1, kb2, kb3";
-    case CameraProjection::ModelType::Fisheye62:
-      return "fx, cx, cy, k_0, k_1, k_2, k_3, k_4, k_5, p_0, p_1";
-    case CameraProjection::ModelType::Linear:
-    case CameraProjection::ModelType::Spherical:
-      return "fx, fy, cx, cy";
-  }
-  return "Unknown";
+  return calibration::modelTypeDescription(type);
 }
 
 std::pair<Eigen::Matrix3d, Eigen::Vector3d> parseRectModel(const nlohmann::json& j) {
