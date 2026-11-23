@@ -1,0 +1,3 @@
+add_executable(TestVisualFactorRelative TestVisualFactorRelative.cpp)
+target_link_libraries(TestVisualFactorRelative ark_problem gtest_main)
+gtest_discover_tests(TestVisualFactorRelative)

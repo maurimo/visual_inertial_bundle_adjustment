@@ -8,6 +8,7 @@ add_library(ark_problem
     PointRefinement.h
     SingleSessionProblem.h
     Types.h
+    VisualFactorRelative.h
     Histograms.cpp
     InertialFactor.cpp
     OmegaPriorFactor.cpp
@@ -20,3 +21,7 @@ add_library(ark_problem
 set_property(TARGET ark_problem PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ark_problem ark_sensor_model imu_types small_thing viba_common)
 target_include_directories(ark_problem PUBLIC "../..")
+
+if(VIBA_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()
