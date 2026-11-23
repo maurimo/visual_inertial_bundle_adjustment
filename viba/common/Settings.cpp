@@ -198,6 +198,11 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
   app.add_option(
          "--max-num-iterations", maxNumIterations, "Max number of iterations (default: 250)")
       ->group(group);
+  app.add_flag(
+         "--verify-jacobians",
+         verifyJacobians,
+         "Check the analytic Jacobians of all factors against finite differences before optimizing")
+      ->group(group);
   app.add_option(
          "--linear-solver", linearSolverArg, "Linear solver (" + std::string(solverArgs) + ")")
       ->group(group);

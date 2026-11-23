@@ -73,6 +73,7 @@ struct OptimizerSettings {
   std::string linearSolverArg = "auto";
   int pcgMaxIterations = 40;
   bool dontOptimize = false;
+  bool verifyJacobians = false;
   unsigned int numThreads = 8;
 
   int triggerDebuggingOfNonlinearities = -1;

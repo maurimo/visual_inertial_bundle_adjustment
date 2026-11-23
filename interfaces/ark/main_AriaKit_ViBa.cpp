@@ -64,6 +64,11 @@ int main(int argc, const char* argv[]) {
   // needed to compute factors in pt-refinement, histograms and optionally verifying jacobians
   adapter.updateRollingShutterData();
 
+  if (optSettings.verifyJacobians) {
+    std::cout << "Verifying Jacobians..." << std::endl;
+    opt.verifyJacobians();
+  }
+
   // do point refinement
   refinePoints(opt);
 
