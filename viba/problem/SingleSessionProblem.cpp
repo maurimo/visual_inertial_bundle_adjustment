@@ -14,6 +14,8 @@
 #define DEFAULT_LOG_CHANNEL "ViBa::SingleSessionProblem"
 #include <logging/Log.h>
 
+#include <cmath>
+
 namespace visual_inertial_ba {
 
 SingleSessionProblem::SingleSessionProblem(small_thing::Optimizer& opt, Verbosity verbosity)
@@ -437,7 +439,50 @@ const ExtrinsicsVariable* SingleSessionProblem::T_Imu_BodyImu_find(int64_t rigIn
 
 int64_t SingleSessionProblem::pointTrack_addNew(const Vec3& pt) {
   pointTracks_.emplace_back(pt);
+  pointHosts_.emplace_back();
   return pointTracks_.size() - 1;
+}
+
+void SingleSessionProblem::pointTrack_setHost(
+    int64_t trackIndex,
+    int64_t hostRigIndex,
+    bool inverseDepth) {
+  XR_CHECK_LT(trackIndex, pointTracks_.size());
+  PointHost& host = pointHosts_[trackIndex];
+  XR_CHECK_LT(host.rigIndex, 0, "Point track {} already has a host", trackIndex);
+  auto& var = pointTracks_[trackIndex];
+  const Vec3 ptHost = findOrDie(inertialPoses_, hostRigIndex).T_bodyImu_world.value * var.value;
+  host.rigIndex = hostRigIndex;
+  host.inverseDepth = inverseDepth;
+  if (inverseDepth) {
+    // R0: any rotation whose third axis is the direction of the point in the host
+    const double dist = ptHost.norm();
+    const Vec3 d = ptHost / dist;
+    const Vec3 e1 = d.cross(std::abs(d[0]) < 0.9 ? Vec3::UnitX() : Vec3::UnitY()).normalized();
+    host.R0.col(0) = e1;
+    host.R0.col(1) = d.cross(e1);
+    host.R0.col(2) = d;
+    var.value = Vec3(0.0, 0.0, 1.0 / dist);
+  } else {
+    host.R0.setIdentity();
+    var.value = ptHost;
+  }
+}
+
+const PointHost& SingleSessionProblem::pointTrack_host(int64_t trackIndex) const {
+  XR_CHECK_LT(trackIndex, pointHosts_.size());
+  return pointHosts_[trackIndex];
+}
+
+Vec3 SingleSessionProblem::pointTrack_world(int64_t trackIndex) const {
+  XR_CHECK_LT(trackIndex, pointTracks_.size());
+  const Vec3& v = pointTracks_[trackIndex].value;
+  const PointHost& host = pointHosts_[trackIndex];
+  if (host.rigIndex < 0) {
+    return v;
+  }
+  const Vec3 ptHost = host.inverseDepth ? Vec3(host.R0 * Vec3(v[0], v[1], 1.0) / v[2]) : v;
+  return findOrDie(inertialPoses_, host.rigIndex).T_bodyImu_world.value.inverse() * ptHost;
 }
 
 PointVariable& SingleSessionProblem::pointTrack(int64_t trackIndex) {

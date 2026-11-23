@@ -249,8 +249,7 @@ void runOptimizationThread(
 
         iter_data.point_positions.reserve(std::min(num_points, max_points));
         for (int64_t i = 0; i < num_points; i += stride) {
-          const auto& pt_var = problem.pointTrack(i);
-          iter_data.point_positions.push_back(pt_var.value);
+          iter_data.point_positions.push_back(problem.pointTrack_world(i));
         }
 
         auto iter_end = std::chrono::high_resolution_clock::now();

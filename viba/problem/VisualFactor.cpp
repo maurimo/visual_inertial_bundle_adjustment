@@ -7,6 +7,8 @@
 
 #include <viba/problem/SingleSessionProblem.h>
 
+#include <viba/problem/VisualFactorRelative.h>
+
 #include <rolling_shutters/RollingShutterData.h>
 #include <viba/common/Enumerate.h>
 
@@ -258,6 +260,51 @@ void SingleSessionProblem::addVisualFactor(
     if (hasErr) {
       XR_LOGI("RIG/CAM: [{}, {}], RES: {}", rigIndex, cameraIndex, err);
     }
+  }
+}
+
+void SingleSessionProblem::addVisualFactor(
+    int64_t rigIndex,
+    int64_t cameraIndex,
+    int64_t pointTrackIndex,
+    const Vec2& projBaseRes,
+    const Mat22& sqrtH_BaseRes,
+    const SoftLossType& reprojErrorLoss) {
+  auto& pointTrackVar = pointTrack(pointTrackIndex);
+  const PointHost& host = pointTrack_host(pointTrackIndex);
+  if (host.rigIndex < 0) { // world coordinates
+    addVisualFactor(
+        rigIndex, cameraIndex, pointTrackVar, projBaseRes, sqrtH_BaseRes, reprojErrorLoss);
+    return;
+  }
+
+  const int64_t cameraModelIndex = findOrDie(rigCamToModelIndex_, {rigIndex, cameraIndex});
+  const int64_t cameraExtrinsicsIndex = findOrDie(rigCamToExtrIndex_, {rigIndex, cameraIndex});
+  XR_CHECK_LT(cameraExtrinsicsIndex, Ts_Cam_BodyImu_.size());
+  auto& rigVar = findOrDie(inertialPoses_, rigIndex);
+  auto& T_Cam_BodyImu_var = Ts_Cam_BodyImu_[cameraExtrinsicsIndex].var;
+  auto& camVar = cameraModels_[cameraModelIndex].var;
+  XR_CHECK(
+      !(camVar.value.hasTimeOffset() || camVar.value.isRollingShutter()),
+      "Points expressed in a host rig: rolling shutter / camera time offset not supported yet");
+
+  if (rigIndex == host.rigIndex) {
+    opt_.addFactor(
+        VisualFactorHostRig(projBaseRes, sqrtH_BaseRes, host.inverseDepth, host.R0),
+        reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+        pointTrackVar,
+        T_Cam_BodyImu_var,
+        camVar);
+  } else {
+    auto& hostVar = findOrDie(inertialPoses_, host.rigIndex);
+    opt_.addFactor(
+        VisualFactorHosted(projBaseRes, sqrtH_BaseRes, host.inverseDepth, host.R0),
+        reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+        pointTrackVar,
+        hostVar.T_bodyImu_world,
+        rigVar.T_bodyImu_world,
+        T_Cam_BodyImu_var,
+        camVar);
   }
 }
 

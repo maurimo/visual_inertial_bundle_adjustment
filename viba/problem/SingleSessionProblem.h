@@ -40,6 +40,14 @@ struct GroupedCalibrationVariable {
 };
 
 using PointVariable = small_thing::Variable<Vec3>;
+
+// How a point-track variable is expressed, see VisualFactorRelative.h
+struct PointHost {
+  int64_t rigIndex = -1; // host rig; -1: the variable is the world position
+  // (u, v, inverse depth) about R0's third axis, instead of a position in the host
+  bool inverseDepth = false;
+  Mat33 R0 = Mat33::Identity();
+};
 using Point2DVariable = small_thing::Variable<Vec2>;
 using CameraModelVariable = GroupedCalibrationVariable<CameraModelParam>;
 using ExtrinsicsVariable = GroupedCalibrationVariable<SE3>;
@@ -66,6 +74,16 @@ class SingleSessionProblem {
       int64_t rigIndex,
       int64_t cameraIndex,
       PointVariable& pointTrackVar,
+      const Vec2& projBaseRes,
+      const Mat22& sqrtH_BaseRes,
+      const SoftLossType& reprojErrorLoss);
+
+  // add visual factor for a point track given by index: the factor is chosen from the way the
+  // track is expressed (world coordinates, or in a host rig, see pointTrack_setHost)
+  void addVisualFactor(
+      int64_t rigIndex,
+      int64_t cameraIndex,
+      int64_t pointTrackIndex,
       const Vec2& projBaseRes,
       const Mat22& sqrtH_BaseRes,
       const SoftLossType& reprojErrorLoss);
@@ -369,6 +387,16 @@ class SingleSessionProblem {
   // get point track from index (overload)
   const PointVariable& pointTrack(int64_t trackIndex) const;
 
+  // express a point track in the body frame of a rig, as a position or as (u, v, inverse depth).
+  // The current value of the variable must be the world position; call before adding its factors.
+  void pointTrack_setHost(int64_t trackIndex, int64_t hostRigIndex, bool inverseDepth);
+
+  // how a point track is expressed
+  const PointHost& pointTrack_host(int64_t trackIndex) const;
+
+  // world position of a point track, whatever the way its variable is expressed
+  Vec3 pointTrack_world(int64_t trackIndex) const;
+
   // get soft (robust) loss used for observations
   SoftLossType& reprojErrorLoss();
 
@@ -419,6 +447,7 @@ class SingleSessionProblem {
 
   // map points
   std::vector<PointVariable> pointTracks_;
+  std::vector<PointHost> pointHosts_; // same indices as pointTracks_
 
   // camera intrinsics
   std::vector<CameraModelVariable> cameraModels_; // per camera type, contains a vector
