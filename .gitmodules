@@ -1,3 +1,4 @@
 [submodule "deps/baspacho"]
 	path = deps/baspacho
-	url = https://github.com/facebookresearch/baspacho
+	url = https://github.com/maurimo/baspacho
+	branch = mau/merge-opt
