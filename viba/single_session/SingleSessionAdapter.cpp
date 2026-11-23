@@ -91,7 +91,12 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
     initAllParamsWithGtTrajectory(paramInitSettings, trajectory);
   }
 
-  addVisualFactors(s.trackingObsLossRadius, s.trackingObsLossCutoff, s.optimizeDetectorBias);
+  addVisualFactors(
+      s.trackingObsLossRadius,
+      s.trackingObsLossCutoff,
+      s.optimizeDetectorBias,
+      s.pointParam,
+      s.pointFarDist);
 
   // required prior to adding inertial factors and omega priors
   regenerateAllPreintegrationsFromImuMeasurements();

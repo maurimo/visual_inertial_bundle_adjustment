@@ -211,6 +211,13 @@ are used with all visual observations.
 * Multiple IMUs are supported, and the inertial poses are related to the estimate of instantaneous angular velocity
   (omega priors). Since the secondary IMU's extrinsics are optimization variables, this is required to prevent the
   unconstrained angular velocity from absorbing the secondary IMU's pose/velocity errors.
+* Point tracks are expressed in a host rig (the rig of the middle observation of the track) rather than in the world:
+  as inverse depth along their initial direction when farther than `--point-far-dist` (20m) from the host, as a
+  position in the host's body frame otherwise (`--point-param hostmix`, the default; `host`, `hostinv` and `world`
+  select a single form). A stretch of trajectory and the points it sees can then move together without the points
+  changing, and a low-parallax point can sit at infinity: with world coordinates such points, pushed ever farther by
+  the optimizer, cannot follow a change of heading and hold the trajectory at the heading it started with.
+  Not available yet with rolling shutter or camera time offset (world coordinates are used then).
 
 ## License
 

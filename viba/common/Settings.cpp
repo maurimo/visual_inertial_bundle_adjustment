@@ -175,6 +175,20 @@ void InitSettings::addCommandLine(CLI::App& app) {
       ->group("Debugging");
 
   app.add_option(
+         "--point-param",
+         pointParam,
+         "How point variables are expressed: world, or in a host rig as host (position), "
+         "hostinv (inverse depth), hostmix (inverse depth when far, default)")
+      ->check(CLI::IsMember({"world", "host", "hostinv", "hostmix"}))
+      ->group("Point parameterization");
+  app.add_option(
+         "--point-far-dist",
+         pointFarDist,
+         "hostmix: distance from the host (meters) beyond which a point is inverse depth "
+         "(default: 20)")
+      ->group("Point parameterization");
+
+  app.add_option(
       "--json-report",
       jsonReport,
       "Path for JSON output containing a report on the optimization process");

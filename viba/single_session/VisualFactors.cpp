@@ -11,12 +11,79 @@
 #define DEFAULT_LOG_CHANNEL "ViBa::VisualFactors"
 #include <logging/Log.h>
 
+#include <algorithm>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace visual_inertial_ba {
+
+void SingleSessionAdapter::setPointHosts(const std::string& pointParam, double pointFarDist) {
+  XR_CHECK(
+      pointParam == "world" || pointParam == "host" || pointParam == "hostinv" ||
+          pointParam == "hostmix",
+      "Unknown point parameterization '{}'",
+      pointParam);
+  if (pointParam == "world") {
+    return;
+  }
+
+  // the factors for points in a host rig do not handle rolling shutter / camera time offset yet
+  for (size_t ptVarIndex = 0; ptVarIndex < prob_.numPointTrackVariables(); ptVarIndex++) {
+    for (const auto& obsIndex : pointTrackObservations_[ptVarIndex]) {
+      const auto& procObs = fData_.trackingObservations[obsIndex];
+      const int64_t rigIndex = findOrDie(matcher_.timestampToRigIndex, procObs.captureTimestampUs);
+      const auto& cam = prob_.cameraModel(rigIndex, procObs.cameraIndex).var.value;
+      if (cam.isRollingShutter() || cam.hasTimeOffset()) {
+        if (verbosity_ != Muted) {
+          XR_LOGW(
+              "Point parameterization '{}' not available with rolling shutter / camera time "
+              "offset: using world coordinates",
+              pointParam);
+        }
+        return;
+      }
+    }
+  }
+
+  int64_t nInverseDepth = 0;
+  std::vector<std::pair<int64_t, int64_t>> timeRig;
+  for (size_t ptVarIndex = 0; ptVarIndex < prob_.numPointTrackVariables(); ptVarIndex++) {
+    // host: the rig of the middle observation in time
+    timeRig.clear();
+    for (const auto& obsIndex : pointTrackObservations_[ptVarIndex]) {
+      const auto& procObs = fData_.trackingObservations[obsIndex];
+      timeRig.emplace_back(
+          procObs.captureTimestampUs,
+          findOrDie(matcher_.timestampToRigIndex, procObs.captureTimestampUs));
+    }
+    std::sort(timeRig.begin(), timeRig.end());
+    const int64_t hostRig = timeRig[timeRig.size() / 2].second;
+
+    bool inverseDepth = pointParam == "hostinv";
+    if (pointParam == "hostmix") {
+      const Vec3 ptHost =
+          prob_.inertialPose(hostRig).T_bodyImu_world.value * prob_.pointTrack(ptVarIndex).value;
+      inverseDepth = ptHost.norm() > pointFarDist;
+    }
+    prob_.pointTrack_setHost(ptVarIndex, hostRig, inverseDepth);
+    nInverseDepth += inverseDepth;
+  }
+  if (verbosity_ != Muted) {
+    XR_LOGI(
+        "Points expressed in a host rig ({}): {} as inverse depth, {} as position",
+        pointParam,
+        nInverseDepth,
+        prob_.numPointTrackVariables() - nInverseDepth);
+  }
+}
 
 void SingleSessionAdapter::addVisualFactors(
     double trackingObsLossRadius,
     double trackingObsLossCutoff,
-    bool optimizeDetectorBias) {
+    bool optimizeDetectorBias,
+    const std::string& pointParam,
+    double pointFarDist) {
   // reset loss radius
   prob_.reprojErrorLoss().setSize(trackingObsLossRadius, trackingObsLossCutoff);
 
@@ -24,6 +91,8 @@ void SingleSessionAdapter::addVisualFactors(
     throw std::runtime_error("Detector bias currently unsupported");
     // prob_.detectorBiases_init(numCameras_);
   }
+
+  setPointHosts(pointParam, pointFarDist);
 
   int64_t nAdded = 0;
   for (size_t ptVarIndex = 0; ptVarIndex < prob_.numPointTrackVariables(); ptVarIndex++) {
@@ -48,7 +117,7 @@ void SingleSessionAdapter::addVisualFactors(
         prob_.addVisualFactor(
             rigIndex,
             cameraIndex,
-            pointTrackVar,
+            static_cast<int64_t>(ptVarIndex),
             projBaseRes,
             sqrtH_BaseRes,
             prob_.reprojErrorLoss());

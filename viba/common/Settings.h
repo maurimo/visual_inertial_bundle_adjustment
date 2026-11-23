@@ -40,6 +40,12 @@ struct InitSettings {
   double trackingObsLossRadius = kReprojectionErrorHuberLossWidth;
   double trackingObsLossCutoff = kReprojectionErrorHuberLossCutoff;
 
+  // how point variables are expressed: "world", or in a host rig (the rig of the middle observation
+  // of the track) as "host" (position), "hostinv" (inverse depth), "hostmix" (inverse depth for the
+  // points farther than pointFarDist meters from their host, position for the others)
+  std::string pointParam = "hostmix";
+  double pointFarDist = 20.0;
+
   double imuRWinflate = 1.0;
   double camIntrRWinflate = 1.0;
   double imuExtrRWinflate = 1.0;

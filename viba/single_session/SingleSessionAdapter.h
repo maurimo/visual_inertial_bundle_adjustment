@@ -115,7 +115,12 @@ class SingleSessionAdapter {
   void addVisualFactors(
       double trackingObsLossRadius,
       double trackingObsLossCutoff,
-      bool optimizeDetectorBias);
+      bool optimizeDetectorBias,
+      const std::string& pointParam,
+      double pointFarDist);
+
+  // express the point tracks in a host rig, see Settings::pointParam (called by addVisualFactors)
+  void setPointHosts(const std::string& pointParam, double pointFarDist);
 
   void addInertialFactors(double imuLossRadius, double imuLossCutoff);
 
