@@ -28,24 +28,6 @@ void SingleSessionAdapter::setPointHosts(const std::string& pointParam, double p
     return;
   }
 
-  // the factors for points in a host rig do not handle rolling shutter / camera time offset yet
-  for (size_t ptVarIndex = 0; ptVarIndex < prob_.numPointTrackVariables(); ptVarIndex++) {
-    for (const auto& obsIndex : pointTrackObservations_[ptVarIndex]) {
-      const auto& procObs = fData_.trackingObservations[obsIndex];
-      const int64_t rigIndex = findOrDie(matcher_.timestampToRigIndex, procObs.captureTimestampUs);
-      const auto& cam = prob_.cameraModel(rigIndex, procObs.cameraIndex).var.value;
-      if (cam.isRollingShutter() || cam.hasTimeOffset()) {
-        if (verbosity_ != Muted) {
-          XR_LOGW(
-              "Point parameterization '{}' not available with rolling shutter / camera time "
-              "offset: using world coordinates",
-              pointParam);
-        }
-        return;
-      }
-    }
-  }
-
   int64_t nInverseDepth = 0;
   std::vector<std::pair<int64_t, int64_t>> timeRig;
   for (size_t ptVarIndex = 0; ptVarIndex < prob_.numPointTrackVariables(); ptVarIndex++) {
