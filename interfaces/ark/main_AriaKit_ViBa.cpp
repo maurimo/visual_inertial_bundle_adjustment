@@ -6,6 +6,7 @@
  */
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -122,6 +123,24 @@ static int runPass(
     saveOpenLoopTrajectory(problem, fData, matcher, outputsDir / "open_loop_framerate_trajectory.csv");
 
     saveCloseLoopTrajectory(problem, fData, matcher, outputsDir / "closed_loop_framerate_trajectory.csv");
+
+    if (problem.numScaleKnots() > 0) {
+      std::ofstream knots(outputsDir / "scale_knots.csv");
+      knots << "timestamp_us,scale\n";
+      for (int64_t i = 0; i < problem.numScaleKnots(); i++) {
+        knots << fmt::format(
+            "{},{:.12f}\n", problem.scaleKnotTimestampUs(i), problem.scaleKnot(i));
+      }
+    }
+    if (problem.numGravityKnots() > 0) {
+      std::ofstream knots(outputsDir / "gravity_knots.csv");
+      knots << "timestamp_us,gravity_x,gravity_y,gravity_z\n";
+      for (int64_t i = 0; i < problem.numGravityKnots(); i++) {
+        const Vec3& g = problem.gravityKnot(i);
+        knots << fmt::format(
+            "{},{:.9f},{:.9f},{:.9f}\n", problem.gravityKnotTimestampUs(i), g[0], g[1], g[2]);
+      }
+    }
   }
 
   return 0;
@@ -192,8 +211,12 @@ int main(int argc, const char* argv[]) {
     if (numPasses > 1) {
       std::cout << fmt::format("=== Pass {} of {} ===", pass, numPasses) << std::endl;
     }
+    InitSettings passSettings = initSettings;
+    if (pass < initSettings.skyFromPass) {
+      passSettings.skyMinDist = passSettings.skyMinDistOverBaseline = 0.0;
+    }
     const int rc =
-        runPass(initSettings, optSettings, passInput, passOutput, rigIndexStart, rigIndexEnd);
+        runPass(passSettings, optSettings, passInput, passOutput, rigIndexStart, rigIndexEnd);
     if (rc != 0 || last) {
       return rc;
     }

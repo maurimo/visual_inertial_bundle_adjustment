@@ -251,6 +251,16 @@ class SingleSessionAdapter {
 
   void initPointsFromObservations();
 
+  // where a triangulated point is, seen from the cameras of the given observations: its lowest
+  // elevation above the horizon [rad], its smallest distance, and the largest distance of a camera
+  // from the first one (at least half the largest distance between two cameras)
+  struct SkyMeasure {
+    double minElevationRad;
+    double minDist;
+    double baseline;
+  };
+  SkyMeasure skyMeasure(const Vec3& pointWorld, const std::vector<int64_t>& obsIndices) const;
+
   void initCamIntrinsics(
       bool constant,
       bool estimateReadoutTime,
@@ -307,6 +317,11 @@ class SingleSessionAdapter {
 
   // pointer to tracking point observations
   std::vector<std::vector<int64_t>> pointTrackObservations_;
+
+  // sky points (see InitSettings), set by initAllVariablesAndFactors
+  double skyMinElevationDeg_ = 5.0;
+  double skyMinDist_ = 0.0;
+  double skyMinDistOverBaseline_ = 0.0;
 
   friend class T3MapAdapter;
 };

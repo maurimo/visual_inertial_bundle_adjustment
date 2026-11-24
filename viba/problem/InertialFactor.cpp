@@ -17,8 +17,15 @@ namespace visual_inertial_ba {
 // Note: don't put in anonymous namespace so we can find the factors via introspection
 // @lint-ignore-every CLANGTIDY facebook-hte-ShadowingClass
 struct InertialFactor {
-  explicit InertialFactor(const PreIntegrationData& preintegrationData)
-      : preintegrationData_(preintegrationData) {}
+  // earthRateWorld: angular velocity of the (Earth-fixed) world frame with respect to inertial
+  // space, in world coordinates [rad/s]. The gyroscope measures the rotation of the body with
+  // respect to inertial space: R_prev_next(measured) = R_prevImu_world * exp(earthRate * dt) *
+  // R_world_nextImu.
+  explicit InertialFactor(
+      const PreIntegrationData& preintegrationData,
+      const Vec3& earthRateWorld = Vec3::Zero())
+      : preintegrationData_(preintegrationData),
+        R_earth_(SO3::exp(earthRateWorld * preintegrationData.rvp.dtSec)) {}
 
   Vec9 operator()(
       const ImuCalibParam& calib,
@@ -46,8 +53,8 @@ struct InertialFactor {
     // rotation error
     const SO3 R_rotCorrection = SO3::exp(-preintCorrection.head<3>());
     const SO3 corrected_R_ImuNext_ImuPrev = R_rotCorrection * preintegrationData_.rvp.R.inverse();
-    const SO3 R_rotErr =
-        corrected_R_ImuNext_ImuPrev * prev_T_imu_world.so3() * next_T_imu_world.so3().inverse();
+    const SO3 R_rotErr = corrected_R_ImuNext_ImuPrev * prev_T_imu_world.so3() * R_earth_ *
+        next_T_imu_world.so3().inverse();
     const Vec3 logRotErr = -R_rotErr.log();
 
     // velocity error and related jacobians
@@ -124,6 +131,160 @@ struct InertialFactor {
 
  private:
   const PreIntegrationData& preintegrationData_;
+  SO3 R_earth_;
+};
+
+// Inertial factor with gravity as a function of time: the gravity of the factor is the linear
+// interpolation of two knots (free vectors), at the factor's mid time.
+// (the name starts as InertialFactor's so that the histograms pick these factors up)
+struct InertialFactorGravityKnots {
+  InertialFactorGravityKnots(
+      const PreIntegrationData& preintegrationData,
+      double alpha,
+      const Vec3& earthRateWorld)
+      : inertialFactor_(preintegrationData, earthRateWorld),
+        alpha_(alpha),
+        deltaTimeSec_(preintegrationData.rvp.dtSec) {}
+
+  Vec9 operator()(
+      const ImuCalibParam& calib,
+      const SE3& prev_T_imu_world,
+      const Vec3& prev_vel_world,
+      const SE3& next_T_imu_world,
+      const Vec3& next_vel_world,
+      const Vec3& gravityPrevKnot,
+      const Vec3& gravityNextKnot,
+      Ref<Mat9X> calib_Jacobian,
+      Ref<Mat96> prev_T_imu_world_Jacobian,
+      Ref<Mat93> prev_vel_world_Jacobian,
+      Ref<Mat96> next_T_imu_world_Jacobian,
+      Ref<Mat93> next_vel_world_Jacobian,
+      Ref<Mat93> gravityPrevKnot_Jacobian,
+      Ref<Mat93> gravityNextKnot_Jacobian) const {
+    const Vec3 gravity = (1.0 - alpha_) * gravityPrevKnot + alpha_ * gravityNextKnot;
+    const GravityData gravityWorld{.radius = gravity.norm(), .vec = gravity};
+    const Vec9 rotVelPosError = inertialFactor_(
+        calib,
+        prev_T_imu_world,
+        prev_vel_world,
+        next_T_imu_world,
+        next_vel_world,
+        gravityWorld,
+        calib_Jacobian,
+        prev_T_imu_world_Jacobian,
+        prev_vel_world_Jacobian,
+        next_T_imu_world_Jacobian,
+        next_vel_world_Jacobian,
+        NullRef());
+    if (!isNull(gravityPrevKnot_Jacobian) || !isNull(gravityNextKnot_Jacobian)) {
+      // derivative with respect to the (unconstrained) gravity vector
+      const Mat33 dVel_dG = deltaTimeSec_ * prev_T_imu_world.so3().matrix();
+      Mat93 dErr_dG;
+      dErr_dG << Mat33::Zero(), dVel_dG, dVel_dG * (0.5 * deltaTimeSec_);
+      if (!isNull(gravityPrevKnot_Jacobian)) {
+        gravityPrevKnot_Jacobian = (1.0 - alpha_) * dErr_dG;
+      }
+      if (!isNull(gravityNextKnot_Jacobian)) {
+        gravityNextKnot_Jacobian = alpha_ * dErr_dG;
+      }
+    }
+    return rotVelPosError;
+  }
+
+ private:
+  InertialFactor inertialFactor_;
+  double alpha_;
+  double deltaTimeSec_;
+};
+
+// Inertial factor with the scale of the IMU's metric as a function of time: the factor's scale s is
+// the linear interpolation of two knots at its mid time, and multiplies gravity and the integrated
+// accelerometer signal together:
+//   velErr = s * (dV + correction) - R_prev * (next_vel - prev_vel - s * g * dt)
+//   posErr = s * (dP + correction) - [p_prev - R_prev_next * p_next - R_prev * (prev_vel * dt + s * g * dt^2 / 2)]
+// With M = dV + correction and E = R_prev * (...) the plain factor evaluated with gravity s * g
+// returns M - E; here s * M - E = (M - E) + (s - 1) * M. The Jacobians of poses and velocities are
+// those of the plain factor, the calibration ones are multiplied by s.
+// (the name starts as InertialFactor's so that the histograms pick these factors up)
+struct InertialFactorScaleKnots {
+  InertialFactorScaleKnots(
+      const PreIntegrationData& preintegrationData,
+      double alpha,
+      const Vec3& nominalGravityWorld,
+      const Vec3& earthRateWorld)
+      : inertialFactor_(preintegrationData, earthRateWorld),
+        alpha_(alpha),
+        deltaTimeSec_(preintegrationData.rvp.dtSec),
+        nominalGravityWorld_(nominalGravityWorld) {}
+
+  Vec9 operator()(
+      const ImuCalibParam& calib,
+      const SE3& prev_T_imu_world,
+      const Vec3& prev_vel_world,
+      const SE3& next_T_imu_world,
+      const Vec3& next_vel_world,
+      const Vec<1>& scalePrevKnot,
+      const Vec<1>& scaleNextKnot,
+      Ref<Mat9X> calib_Jacobian,
+      Ref<Mat96> prev_T_imu_world_Jacobian,
+      Ref<Mat93> prev_vel_world_Jacobian,
+      Ref<Mat96> next_T_imu_world_Jacobian,
+      Ref<Mat93> next_vel_world_Jacobian,
+      Ref<Vec9> scalePrevKnot_Jacobian,
+      Ref<Vec9> scaleNextKnot_Jacobian) const {
+    const double s = (1.0 - alpha_) * scalePrevKnot[0] + alpha_ * scaleNextKnot[0];
+    const Vec3 gravity = s * nominalGravityWorld_;
+    const GravityData gravityWorld{.radius = gravity.norm(), .vec = gravity};
+    Vec9 rotVelPosError = inertialFactor_(
+        calib,
+        prev_T_imu_world,
+        prev_vel_world,
+        next_T_imu_world,
+        next_vel_world,
+        gravityWorld,
+        calib_Jacobian,
+        prev_T_imu_world_Jacobian,
+        prev_vel_world_Jacobian,
+        next_T_imu_world_Jacobian,
+        next_vel_world_Jacobian,
+        NullRef());
+
+    // the estimated increments E (as in the plain factor), to get M = error + E
+    const SO3& R_prev = prev_T_imu_world.so3();
+    const Vec3 velE = R_prev * (next_vel_world - prev_vel_world - gravity * deltaTimeSec_);
+    const SO3 R_prevImu_nextImu = R_prev * next_T_imu_world.so3().inverse();
+    const Vec3 posE = prev_T_imu_world.translation() -
+        R_prevImu_nextImu * next_T_imu_world.translation() -
+        R_prev *
+            (prev_vel_world * deltaTimeSec_ + gravity * (0.5 * deltaTimeSec_ * deltaTimeSec_));
+    const Vec3 velM = rotVelPosError.segment<3>(3) + velE;
+    const Vec3 posM = rotVelPosError.segment<3>(6) + posE;
+    rotVelPosError.segment<3>(3) += (s - 1.0) * velM;
+    rotVelPosError.segment<3>(6) += (s - 1.0) * posM;
+
+    if (!isNull(calib_Jacobian)) {
+      calib_Jacobian.bottomRows(6) *= s;
+    }
+    if (!isNull(scalePrevKnot_Jacobian) || !isNull(scaleNextKnot_Jacobian)) {
+      const Vec3 gPrev = R_prev * nominalGravityWorld_;
+      Vec9 dErr_dS;
+      dErr_dS << Vec3::Zero(), velM + gPrev * deltaTimeSec_,
+          posM + gPrev * (0.5 * deltaTimeSec_ * deltaTimeSec_);
+      if (!isNull(scalePrevKnot_Jacobian)) {
+        scalePrevKnot_Jacobian = (1.0 - alpha_) * dErr_dS;
+      }
+      if (!isNull(scaleNextKnot_Jacobian)) {
+        scaleNextKnot_Jacobian = alpha_ * dErr_dS;
+      }
+    }
+    return rotVelPosError;
+  }
+
+ private:
+  InertialFactor inertialFactor_;
+  double alpha_;
+  double deltaTimeSec_;
+  Vec3 nominalGravityWorld_;
 };
 
 // Note: don't put in anonymous namespace so we can find the factors via introspection
@@ -319,9 +480,41 @@ void SingleSessionProblem::addInertialFactor(
 
   XR_CHECK_EQ(preintegrationData.J.cols(), calibVar.getTangentDim());
 
-  if (imuIndex == 0) {
+  if (!scaleKnots_.empty()) {
+    XR_CHECK_EQ(imuIndex, 0, "Scale knots are only implemented for the main IMU");
+    XR_CHECK(gravityKnots_.empty(), "Scale knots and gravity knots cannot be used together");
+    const auto [knot, alpha] =
+        scaleKnotAt((prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2);
     std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
-        InertialFactor(preintegrationData),
+        InertialFactorScaleKnots(
+            preintegrationData, alpha, gravityWorld().value.vec, earthRateWorld_),
+        H,
+        imuErrorLoss,
+        calibVar,
+        prevPoseVar.T_bodyImu_world,
+        prevPoseVar.vel_world,
+        nextPoseVar.T_bodyImu_world,
+        nextPoseVar.vel_world,
+        scaleKnots_[knot],
+        scaleKnots_[knot + 1]);
+  } else if (!gravityKnots_.empty()) {
+    XR_CHECK_EQ(imuIndex, 0, "Gravity knots are only implemented for the main IMU");
+    const auto [knot, alpha] =
+        gravityKnotAt((prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2);
+    std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
+        InertialFactorGravityKnots(preintegrationData, alpha, earthRateWorld_),
+        H,
+        imuErrorLoss,
+        calibVar,
+        prevPoseVar.T_bodyImu_world,
+        prevPoseVar.vel_world,
+        nextPoseVar.T_bodyImu_world,
+        nextPoseVar.vel_world,
+        gravityKnots_[knot],
+        gravityKnots_[knot + 1]);
+  } else if (imuIndex == 0) {
+    std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
+        InertialFactor(preintegrationData, earthRateWorld_),
         H,
         imuErrorLoss,
         calibVar,

@@ -84,6 +84,9 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
   if (verbosity_ != Muted) {
     paramInitSettings.printImuCalibOptions();
   }
+  skyMinElevationDeg_ = s.skyMinElevationDeg;
+  skyMinDist_ = s.skyMinDist;
+  skyMinDistOverBaseline_ = s.skyMinDistOverBaseline;
 
   if (!paramInitSettings.poseToGt && !paramInitSettings.velToGt && !paramInitSettings.omegaToGt) {
     initAllParams(paramInitSettings);
@@ -97,6 +100,65 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
       s.optimizeDetectorBias,
       s.pointParam,
       s.pointFarDist);
+
+  if (s.gravityScale != 1.0) {
+    auto& gravity = prob_.gravityWorld().value;
+    gravity.radius *= s.gravityScale;
+    gravity.vec *= s.gravityScale;
+    if (verbosity_ != Muted) {
+      XR_LOGI("Gravity magnitude set to {}", gravity.radius);
+    }
+  }
+  if (s.gravityKnotSec > 0.0) {
+    const auto sortedRigs = prob_.sortedRigIndices();
+    const int64_t startUs = prob_.inertialPose(sortedRigs.front()).timestampUs;
+    const int64_t endUs = prob_.inertialPose(sortedRigs.back()).timestampUs;
+    const int numKnots =
+        std::max(2, int(std::ceil((endUs - startUs) * 1e-6 / s.gravityKnotSec)) + 1);
+    // world z is the vertical; a non-positive std holds the component (1e-6 m/s2)
+    const auto sqrtH = [](double stdDev) { return stdDev > 0.0 ? 1.0 / stdDev : 1e6; };
+    prob_.gravityKnots_init(
+        startUs,
+        endUs,
+        numKnots,
+        Vec3(sqrtH(s.gravityDirStd), sqrtH(s.gravityDirStd), sqrtH(s.gravityMagStd)),
+        Vec3(sqrtH(s.gravityRwDirStd), sqrtH(s.gravityRwDirStd), sqrtH(s.gravityRwMagStd)));
+    if (verbosity_ != Muted) {
+      XR_LOGI(
+          "Gravity as a function of time: {} knots, one every {:.1f} s; std of magnitude / "
+          "direction: prior {} / {}, random walk {} / {} m/s2",
+          numKnots,
+          (endUs - startUs) * 1e-6 / (numKnots - 1),
+          s.gravityMagStd,
+          s.gravityDirStd,
+          s.gravityRwMagStd,
+          s.gravityRwDirStd);
+    }
+  }
+
+  if (s.earthRateUp != 0.0) {
+    // world z is the vertical
+    prob_.setEarthRateWorld(Vec3(0.0, 0.0, s.earthRateUp));
+    if (verbosity_ != Muted) {
+      XR_LOGI("Rotation of the Earth about the vertical: {} rad/s", s.earthRateUp);
+    }
+  }
+  if (s.scaleKnotSec > 0.0) {
+    const auto sortedRigs = prob_.sortedRigIndices();
+    const int64_t startUs = prob_.inertialPose(sortedRigs.front()).timestampUs;
+    const int64_t endUs = prob_.inertialPose(sortedRigs.back()).timestampUs;
+    const int numKnots = std::max(2, int(std::ceil((endUs - startUs) * 1e-6 / s.scaleKnotSec)) + 1);
+    prob_.scaleKnots_init(startUs, endUs, numKnots, 1.0 / s.scaleKnotStd, 1.0 / s.scaleKnotRwStd);
+    if (verbosity_ != Muted) {
+      XR_LOGI(
+          "Scale of the IMU's metric as a function of time: {} knots, one every {:.1f} s; prior "
+          "std {}, random walk std {}",
+          numKnots,
+          (endUs - startUs) * 1e-6 / (numKnots - 1),
+          s.scaleKnotStd,
+          s.scaleKnotRwStd);
+    }
+  }
 
   // required prior to adding inertial factors and omega priors
   regenerateAllPreintegrationsFromImuMeasurements();

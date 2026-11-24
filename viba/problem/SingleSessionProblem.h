@@ -250,6 +250,46 @@ class SingleSessionProblem {
   // get world gravity (overload)
   const GravityVariable& gravityWorld() const;
 
+  // Gravity as a function of time: numKnots >= 2 vectors equally spaced between the two times,
+  // all starting at the world gravity; the inertial factors added afterwards use the linear
+  // interpolation at their mid time (main IMU only). Every knot gets a prior at the world gravity
+  // and a random walk to the next knot; the square-root informations are per world axis.
+  void gravityKnots_init(
+      int64_t startTimestampUs,
+      int64_t endTimestampUs,
+      int numKnots,
+      const Vec3& priorDiagSqrtH,
+      const Vec3& randomWalkDiagSqrtH);
+
+  // rotation of the Earth: angular velocity of the world frame with respect to inertial space, in
+  // world coordinates [rad/s]; set before adding the inertial factors
+  void setEarthRateWorld(const Vec3& earthRateWorld) {
+    earthRateWorld_ = earthRateWorld;
+  }
+
+  // number of gravity knots (0: one constant world gravity)
+  int64_t numGravityKnots() const;
+
+  // time and value of a gravity knot
+  int64_t gravityKnotTimestampUs(int64_t knotIndex) const;
+  const Vec3& gravityKnot(int64_t knotIndex) const;
+
+  // gravity at a time: the interpolation of the knots, or the world gravity without knots
+  Vec3 gravityAt(int64_t timestampUs) const;
+
+  // Scale of the IMU's metric as a function of time (see InitSettings::scaleKnotSec): numKnots >= 2
+  // factors equally spaced between the two times, starting at 1, with a prior at 1 and a random
+  // walk between neighbours. Used by the inertial factors of the main IMU added afterwards.
+  void scaleKnots_init(
+      int64_t startTimestampUs,
+      int64_t endTimestampUs,
+      int numKnots,
+      double priorSqrtH,
+      double randomWalkSqrtH);
+  int64_t numScaleKnots() const;
+  int64_t scaleKnotTimestampUs(int64_t knotIndex) const;
+  double scaleKnot(int64_t knotIndex) const;
+
   // add new camera model, return index
   int64_t cameraModel_addNew(
       CameraModelParam&& data,
@@ -440,6 +480,24 @@ class SingleSessionProblem {
 
   // variable (reference to) with world gravity, constant unless computing marginal factors
   std::shared_ptr<GravityVariable> gravityWorld_;
+
+  // gravity knots (optional), see gravityKnots_init
+  std::vector<small_thing::Variable<Vec3>> gravityKnots_;
+  int64_t gravityKnotsStartUs_ = 0;
+  double gravityKnotsSpacingUs_ = 1.0;
+
+  // index of the knot before a time, and where the time lies between it and the next one (0..1)
+  std::pair<int64_t, double> gravityKnotAt(int64_t timestampUs) const;
+
+  // angular velocity of the world frame with respect to inertial space [rad/s], world coordinates
+  // (main IMU's inertial factors only)
+  Vec3 earthRateWorld_ = Vec3::Zero();
+
+  // scale knots (optional), see scaleKnots_init
+  std::vector<small_thing::Variable<Vec<1>>> scaleKnots_;
+  int64_t scaleKnotsStartUs_ = 0;
+  double scaleKnotsSpacingUs_ = 1.0;
+  std::pair<int64_t, double> scaleKnotAt(int64_t timestampUs) const;
 
   // rigIndex (in recording's frame list) -> variable
   // (note that only a subset of the rigs in the recording might be loaded)

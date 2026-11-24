@@ -233,6 +233,148 @@ const GravityVariable& SingleSessionProblem::gravityWorld() const {
   return *gravityWorld_;
 }
 
+void SingleSessionProblem::gravityKnots_init(
+    int64_t startTimestampUs,
+    int64_t endTimestampUs,
+    int numKnots,
+    const Vec3& priorDiagSqrtH,
+    const Vec3& randomWalkDiagSqrtH) {
+  XR_CHECK(gravityKnots_.empty());
+  XR_CHECK_GE(numKnots, 2);
+  XR_CHECK_GT(endTimestampUs, startTimestampUs);
+  const Vec3 nominal = gravityWorld().value.vec;
+  gravityKnotsStartUs_ = startTimestampUs;
+  gravityKnotsSpacingUs_ = double(endTimestampUs - startTimestampUs) / (numKnots - 1);
+  // (the optimizer keeps pointers to the variables: all are created before any factor)
+  gravityKnots_.reserve(numKnots);
+  for (int i = 0; i < numKnots; i++) {
+    gravityKnots_.emplace_back(nominal);
+  }
+  for (int i = 0; i < numKnots; i++) {
+    opt_.addFactor(
+        [nominal, priorDiagSqrtH](const Vec3& g, Ref<Mat33>&& gJacobian) -> Vec3 {
+          if (!isNull(gJacobian)) {
+            gJacobian = priorDiagSqrtH.asDiagonal();
+          }
+          return priorDiagSqrtH.cwiseProduct(g - nominal);
+        },
+        gravityKnots_[i]);
+    if (i + 1 < numKnots) {
+      opt_.addFactor(
+          [randomWalkDiagSqrtH](
+              const Vec3& gPrev,
+              const Vec3& gNext,
+              Ref<Mat33>&& gPrevJacobian,
+              Ref<Mat33>&& gNextJacobian) -> Vec3 {
+            if (!isNull(gPrevJacobian)) {
+              gPrevJacobian = -Mat33(randomWalkDiagSqrtH.asDiagonal());
+            }
+            if (!isNull(gNextJacobian)) {
+              gNextJacobian = randomWalkDiagSqrtH.asDiagonal();
+            }
+            return randomWalkDiagSqrtH.cwiseProduct(gNext - gPrev);
+          },
+          gravityKnots_[i],
+          gravityKnots_[i + 1]);
+    }
+  }
+}
+
+int64_t SingleSessionProblem::numGravityKnots() const {
+  return gravityKnots_.size();
+}
+
+int64_t SingleSessionProblem::gravityKnotTimestampUs(int64_t knotIndex) const {
+  return gravityKnotsStartUs_ + std::llround(knotIndex * gravityKnotsSpacingUs_);
+}
+
+const Vec3& SingleSessionProblem::gravityKnot(int64_t knotIndex) const {
+  return gravityKnots_.at(knotIndex).value;
+}
+
+std::pair<int64_t, double> SingleSessionProblem::gravityKnotAt(int64_t timestampUs) const {
+  XR_CHECK_GE(gravityKnots_.size(), 2);
+  const double x = (timestampUs - gravityKnotsStartUs_) / gravityKnotsSpacingUs_;
+  const int64_t last = gravityKnots_.size() - 2;
+  const int64_t k = std::min(std::max<int64_t>(int64_t(std::floor(x)), 0), last);
+  return {k, std::min(std::max(x - k, 0.0), 1.0)};
+}
+
+void SingleSessionProblem::scaleKnots_init(
+    int64_t startTimestampUs,
+    int64_t endTimestampUs,
+    int numKnots,
+    double priorSqrtH,
+    double randomWalkSqrtH) {
+  XR_CHECK(scaleKnots_.empty());
+  XR_CHECK_GE(numKnots, 2);
+  XR_CHECK_GT(endTimestampUs, startTimestampUs);
+  scaleKnotsStartUs_ = startTimestampUs;
+  scaleKnotsSpacingUs_ = double(endTimestampUs - startTimestampUs) / (numKnots - 1);
+  // (the optimizer keeps pointers to the variables: all are created before any factor)
+  scaleKnots_.reserve(numKnots);
+  for (int i = 0; i < numKnots; i++) {
+    scaleKnots_.emplace_back(Vec<1>::Ones());
+  }
+  using Mat11 = Mat<1, 1>;
+  for (int i = 0; i < numKnots; i++) {
+    opt_.addFactor(
+        [priorSqrtH](const Vec<1>& s, Ref<Mat11>&& sJacobian) -> Vec<1> {
+          if (!isNull(sJacobian)) {
+            sJacobian(0, 0) = priorSqrtH;
+          }
+          return Vec<1>(priorSqrtH * (s[0] - 1.0));
+        },
+        scaleKnots_[i]);
+    if (i + 1 < numKnots) {
+      opt_.addFactor(
+          [randomWalkSqrtH](
+              const Vec<1>& sPrev,
+              const Vec<1>& sNext,
+              Ref<Mat11>&& sPrevJacobian,
+              Ref<Mat11>&& sNextJacobian) -> Vec<1> {
+            if (!isNull(sPrevJacobian)) {
+              sPrevJacobian(0, 0) = -randomWalkSqrtH;
+            }
+            if (!isNull(sNextJacobian)) {
+              sNextJacobian(0, 0) = randomWalkSqrtH;
+            }
+            return Vec<1>(randomWalkSqrtH * (sNext[0] - sPrev[0]));
+          },
+          scaleKnots_[i],
+          scaleKnots_[i + 1]);
+    }
+  }
+}
+
+int64_t SingleSessionProblem::numScaleKnots() const {
+  return scaleKnots_.size();
+}
+
+int64_t SingleSessionProblem::scaleKnotTimestampUs(int64_t knotIndex) const {
+  return scaleKnotsStartUs_ + std::llround(knotIndex * scaleKnotsSpacingUs_);
+}
+
+double SingleSessionProblem::scaleKnot(int64_t knotIndex) const {
+  return scaleKnots_.at(knotIndex).value[0];
+}
+
+std::pair<int64_t, double> SingleSessionProblem::scaleKnotAt(int64_t timestampUs) const {
+  XR_CHECK_GE(scaleKnots_.size(), 2);
+  const double x = (timestampUs - scaleKnotsStartUs_) / scaleKnotsSpacingUs_;
+  const int64_t last = scaleKnots_.size() - 2;
+  const int64_t k = std::min(std::max<int64_t>(int64_t(std::floor(x)), 0), last);
+  return {k, std::min(std::max(x - k, 0.0), 1.0)};
+}
+
+Vec3 SingleSessionProblem::gravityAt(int64_t timestampUs) const {
+  if (gravityKnots_.empty()) {
+    return gravityWorld().value.vec;
+  }
+  const auto [k, alpha] = gravityKnotAt(timestampUs);
+  return (1.0 - alpha) * gravityKnots_[k].value + alpha * gravityKnots_[k + 1].value;
+}
+
 int64_t SingleSessionProblem::cameraModel_addNew(
     CameraModelParam&& data,
     int64_t averageTimestampUs,
