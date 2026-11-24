@@ -224,6 +224,13 @@ void SingleSessionAdapter::initCamIntrinsics(
       }
     }
 
+    if (plsOn_) {
+      std::unordered_map<int64_t, double> rigToTimeSpanSec;
+      for (const auto& [j, _] : prob_.inertialPoses()) {
+        rigToTimeSpanSec[j] = plsTimeSpanSec();
+      }
+      initRollingShutterData(rigToTimeSpanSec, fData_.allImuMeasurements[0]);
+    }
     return;
   }
 
@@ -270,7 +277,8 @@ void SingleSessionAdapter::initCamIntrinsics(
             (isRollingShutter ? onlineParams.readoutTimeSec() + kTimestampSlackSec : 0.0) +
             ((thisCamEstimateTimeOffset || (timeOffsetsSeconds_Ref_Cam != 0.0))
                  ? 2.0 * (std::abs(timeOffsetsSeconds_Ref_Cam) + kTimestampSlackSec)
-                 : 0.0);
+                 : 0.0) +
+            plsTimeSpanSec();
         XR_CHECK_LT(camTimeSpan, 1.0);
 
         onlineParams.setEstimateReadoutTime(thisCamEstimateReadoutTime);
@@ -306,7 +314,24 @@ void SingleSessionAdapter::initRollingShutterData(
   for (const auto& [j, roTimeSec] : rigToMaxCameraReadoutTimeSec) {
     const int calibStateIndex = matcher_.rigIndexToCalibStateIndex[j];
     const int64_t timestampUs = fData_.onlineCalibration.calibs[calibStateIndex].timestamp_us;
-    const int64_t intervalHalfSizeUs = kTimestampSlackMs * 1e3 + roTimeSec * 0.5e6;
+    int64_t intervalHalfSizeUs = kTimestampSlackMs * 1e3 + roTimeSec * 0.5e6;
+    if (plsOn_ && !imu0Measurements.empty() && roTimeSec <= plsTimeSpanSec()) {
+      // The interval is this long for the parasitic light row time only. Near the ends of the
+      // recording the inertial samples may not cover it: take what there is, or leave the rig
+      // without motion data (its observations then get no model time). The margin is for the
+      // time offsets of the IMU, which shift the interval that is integrated.
+      const int64_t kMarginUs = 8000;
+      const int64_t availableUs = std::min(
+                                      timestampUs - imu0Measurements.front().timestampNs / 1000,
+                                      imu0Measurements.back().timestampNs / 1000 - timestampUs) -
+          kMarginUs;
+      if (availableUs < intervalHalfSizeUs) {
+        if (availableUs < plsNeededHalfIntervalUs()) {
+          continue;
+        }
+        intervalHalfSizeUs = availableUs;
+      }
+    }
 
     prob_.rigToRSData().emplace(
         std::piecewise_construct,
@@ -324,6 +349,7 @@ void SingleSessionAdapter::updateRollingShutterData() {
     const auto& imuCalib = prob_.imuCalib(j, 0); // imu 0 data
     rsData.compute(timestampUs, imuCalib.var.value.modelParams, gravityWorld);
   }
+  plsUpdate();
 }
 
 void SingleSessionAdapter::initCamExtrinsics(bool constant, bool useFactory) {

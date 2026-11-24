@@ -175,6 +175,10 @@ class SingleSessionAdapter {
 
   void updateRollingShutterData();
 
+  // Divide trajectory and points by the scale knots and set the knots back to 1 (the end of a
+  // scale-knot stage, see InitSettings::scaleKnotSec)
+  void applyScaleKnots();
+
  private:
   using RigSensorToIndex = std::unordered_map<RigSensorIndices, int64_t, pair_hash>;
 
@@ -317,6 +321,34 @@ class SingleSessionAdapter {
 
   // pointer to tracking point observations
   std::vector<std::vector<int64_t>> pointTrackObservations_;
+
+  // Parasitic light row time (see InitSettings::plsScale): the observations with a known exposure
+  // get a time against their frame, kept in the problem (addObservationTimeShift) and computed
+  // again from the current estimates whenever the rolling-shutter data are (plsUpdate).
+  struct PlsObservation {
+    double* shiftSec;
+    int64_t rigIndex;
+    int cameraIndex;
+    int64_t pointIndex;
+    Vec2 pixel;
+    double exposureSec;
+    int kind; // 0: corner track, 1: photometric patch
+  };
+  void plsInit(const InitSettings& s);
+  double plsExposureSec(int cameraIndex, int64_t timestampUs) const;
+  double plsTimeSpanSec() const;
+  int64_t plsNeededHalfIntervalUs() const;
+  void plsUpdate();
+  bool plsOn_ = false;
+  double plsScale_ = 0.0;
+  double plsEps_ = 0.0;
+  double plsT0Sec_ = 0.0;
+  double plsRowSec_ = 0.0;
+  double plsSmearPx_[2] = {0.0, 0.0};
+  std::vector<std::vector<std::pair<int64_t, double>>> plsExposure_; // per camera: (us, s)
+  std::vector<int8_t> plsKinds_; // per row of the observations (empty: unknown)
+  std::vector<PlsObservation> plsObs_;
+  int plsUpdates_ = 0;
 
   // sky points (see InitSettings), set by initAllVariablesAndFactors
   double skyMinElevationDeg_ = 5.0;

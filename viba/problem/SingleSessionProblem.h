@@ -14,6 +14,7 @@
 #include <small_thing/Optimizer.h>
 #include <viba/common/Constants.h>
 #include <viba/problem/Types.h>
+#include <deque>
 #include <optional>
 
 namespace visual_inertial_ba {
@@ -76,8 +77,12 @@ class SingleSessionProblem {
       PointVariable& pointTrackVar,
       const Vec2& projBaseRes,
       const Mat22& sqrtH_BaseRes,
-      const SoftLossType& reprojErrorLoss);
+      const SoftLossType& reprojErrorLoss,
+      const double* timeShiftSec = nullptr);
 
+  // timeShiftSec (optional, see addObservationTimeShift): the observation was taken that much
+  // later than the frame (on top of the row time and time offset of the camera, if any); the
+  // rolling-shutter factors are then used, which need the rig's RollingShutterData.
   // add visual factor for a point track given by index: the factor is chosen from the way the
   // track is expressed (world coordinates, or in a host rig, see pointTrack_setHost)
   void addVisualFactor(
@@ -86,7 +91,8 @@ class SingleSessionProblem {
       int64_t pointTrackIndex,
       const Vec2& projBaseRes,
       const Mat22& sqrtH_BaseRes,
-      const SoftLossType& reprojErrorLoss);
+      const SoftLossType& reprojErrorLoss,
+      const double* timeShiftSec = nullptr);
 
   // add visual factor, with image detector bias
   void addVisualFactorWithBias(
@@ -287,6 +293,23 @@ class SingleSessionProblem {
       double priorSqrtH,
       double randomWalkSqrtH);
   int64_t numScaleKnots() const;
+  // The knots enter the inertial factors only while active (the stage at the start of a pass).
+  void scaleKnots_setActive(bool active) {
+    scaleKnotsActive_ = active;
+  }
+  // interpolated value of the knots
+  double scaleKnots_valueAt(int64_t timestampUs) const;
+  // "Straighten": the trajectory is divided by the knots (positions of the IMU rebuilt from the
+  // steps between consecutive rigs, velocities), the points follow (in a host rig: divided by the
+  // knots at the host; in world coordinates: about the rig worldPointAnchorRig[track]), and the
+  // knots are set back to 1. The calibration is left as it is.
+  void scaleKnots_apply(const std::vector<int64_t>& worldPointAnchorRig);
+
+  // A time added to that of one observation (see addVisualFactor): storage that stays where it
+  // is; the value may be changed between optimizer steps.
+  double* addObservationTimeShift() {
+    return &obsTimeShiftSec_.emplace_back(0.0);
+  }
   int64_t scaleKnotTimestampUs(int64_t knotIndex) const;
   double scaleKnot(int64_t knotIndex) const;
 
@@ -498,6 +521,9 @@ class SingleSessionProblem {
   int64_t scaleKnotsStartUs_ = 0;
   double scaleKnotsSpacingUs_ = 1.0;
   std::pair<int64_t, double> scaleKnotAt(int64_t timestampUs) const;
+  bool scaleKnotsActive_ = true;
+
+  std::deque<double> obsTimeShiftSec_;
 
   // rigIndex (in recording's frame list) -> variable
   // (note that only a subset of the rigs in the recording might be loaded)

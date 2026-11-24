@@ -238,22 +238,61 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_option(
          "--earth-rate-up",
          earthRateUp,
-         "Rotation of the Earth about the local vertical [rad/s], 7.292e-5 * sin(latitude) "
-         "(default: 0, not modelled)")
+         "Rotation of the Earth about the local vertical [rad/s], 7.292e-5 * sin(latitude); 0: not "
+         "modelled (default: 5.365e-5, the value at 47.4 deg north)")
       ->group("Gravity");
   app.add_option(
          "--scale-knot-sec",
          scaleKnotSec,
          "Scale of the IMU's metric (gravity and integrated accelerometer together) as a function "
-         "of time, one knot every this many seconds, interpolated (default: 0, off)")
+         "of time, one knot every this many seconds, interpolated; used in a stage at the start of "
+         "each pass, after which the trajectory is divided by the knots (default: 60; 0: off)")
       ->group("Gravity");
   app.add_option("--scale-knot-std", scaleKnotStd, "Prior std of a scale knot (default: 0.05)")
       ->group("Gravity");
   app.add_option(
          "--scale-knot-rw-std",
          scaleKnotRwStd,
-         "Random walk std between two scale knots (default: 0.01)")
+         "Random walk std between two scale knots (default: 0.003)")
       ->group("Gravity");
+  app.add_option(
+         "--scale-knot-iterations",
+         scaleKnotIterations,
+         "Iterations of a scale-knot stage (default: 1; 0: the knots stay in for the whole "
+         "optimization and are written to scale_knots.csv)")
+      ->group("Gravity");
+  app.add_option(
+         "--scale-knot-stages", scaleKnotStages, "Number of scale-knot stages (default: 1)")
+      ->group("Gravity");
+
+  app.add_option(
+         "--pls-scale",
+         plsScale,
+         "Parasitic light row time of the Aria SLAM cameras: scale of the model's time (default: "
+         "1; 0: off; needs expo_cam<k>.csv)")
+      ->group("Parasitic light");
+  app.add_option("--pls-eps", plsEps, "Parasitic light sensitivity (default: 1/65)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-t0-ms", plsT0Ms, "Time from the end of the exposure to the first row (default: 1)")
+      ->group("Parasitic light");
+  app.add_option("--pls-row-us", plsRowUs, "Row time of the readout (default: 19)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-smear-px",
+         plsSmearPx,
+         "Correlation length of photometric patches [pixels] (default: 1.2; 0: no attenuation)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-smear-corner-px",
+         plsSmearCornerPx,
+         "Correlation length of corner tracks [pixels] (default: 5; 0: no attenuation)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-dir",
+         plsDir,
+         "Folder of expo_cam<k>.csv and obs_kinds.csv (default: the input folder)")
+      ->group("Parasitic light");
 
   app.add_option(
       "--json-report",

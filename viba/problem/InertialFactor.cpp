@@ -211,11 +211,13 @@ struct InertialFactorScaleKnots {
       const PreIntegrationData& preintegrationData,
       double alpha,
       const Vec3& nominalGravityWorld,
-      const Vec3& earthRateWorld)
+      const Vec3& earthRateWorld,
+      const bool* active = nullptr)
       : inertialFactor_(preintegrationData, earthRateWorld),
         alpha_(alpha),
         deltaTimeSec_(preintegrationData.rvp.dtSec),
-        nominalGravityWorld_(nominalGravityWorld) {}
+        nominalGravityWorld_(nominalGravityWorld),
+        active_(active) {}
 
   Vec9 operator()(
       const ImuCalibParam& calib,
@@ -232,7 +234,9 @@ struct InertialFactorScaleKnots {
       Ref<Mat93> next_vel_world_Jacobian,
       Ref<Vec9> scalePrevKnot_Jacobian,
       Ref<Vec9> scaleNextKnot_Jacobian) const {
-    const double s = (1.0 - alpha_) * scalePrevKnot[0] + alpha_ * scaleNextKnot[0];
+    // (not active: the plain factor; the knots are then held by their priors alone)
+    const bool active = active_ == nullptr || *active_;
+    const double s = active ? (1.0 - alpha_) * scalePrevKnot[0] + alpha_ * scaleNextKnot[0] : 1.0;
     const Vec3 gravity = s * nominalGravityWorld_;
     const GravityData gravityWorld{.radius = gravity.norm(), .vec = gravity};
     Vec9 rotVelPosError = inertialFactor_(
@@ -271,10 +275,10 @@ struct InertialFactorScaleKnots {
       dErr_dS << Vec3::Zero(), velM + gPrev * deltaTimeSec_,
           posM + gPrev * (0.5 * deltaTimeSec_ * deltaTimeSec_);
       if (!isNull(scalePrevKnot_Jacobian)) {
-        scalePrevKnot_Jacobian = (1.0 - alpha_) * dErr_dS;
+        scalePrevKnot_Jacobian = active ? Vec9((1.0 - alpha_) * dErr_dS) : Vec9(Vec9::Zero());
       }
       if (!isNull(scaleNextKnot_Jacobian)) {
-        scaleNextKnot_Jacobian = alpha_ * dErr_dS;
+        scaleNextKnot_Jacobian = active ? Vec9(alpha_ * dErr_dS) : Vec9(Vec9::Zero());
       }
     }
     return rotVelPosError;
@@ -285,6 +289,7 @@ struct InertialFactorScaleKnots {
   double alpha_;
   double deltaTimeSec_;
   Vec3 nominalGravityWorld_;
+  const bool* active_;
 };
 
 // Note: don't put in anonymous namespace so we can find the factors via introspection
@@ -480,14 +485,18 @@ void SingleSessionProblem::addInertialFactor(
 
   XR_CHECK_EQ(preintegrationData.J.cols(), calibVar.getTangentDim());
 
-  if (!scaleKnots_.empty()) {
-    XR_CHECK_EQ(imuIndex, 0, "Scale knots are only implemented for the main IMU");
+  // (scale knots: main IMU only; the factors of the other IMUs are the plain ones)
+  if (!scaleKnots_.empty() && imuIndex == 0) {
     XR_CHECK(gravityKnots_.empty(), "Scale knots and gravity knots cannot be used together");
     const auto [knot, alpha] =
         scaleKnotAt((prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2);
     std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
         InertialFactorScaleKnots(
-            preintegrationData, alpha, gravityWorld().value.vec, earthRateWorld_),
+            preintegrationData,
+            alpha,
+            gravityWorld().value.vec,
+            earthRateWorld_,
+            &scaleKnotsActive_),
         H,
         imuErrorLoss,
         calibVar,

@@ -359,6 +359,66 @@ double SingleSessionProblem::scaleKnot(int64_t knotIndex) const {
   return scaleKnots_.at(knotIndex).value[0];
 }
 
+double SingleSessionProblem::scaleKnots_valueAt(int64_t timestampUs) const {
+  if (scaleKnots_.empty()) {
+    return 1.0;
+  }
+  const auto [knot, alpha] = scaleKnotAt(timestampUs);
+  return (1.0 - alpha) * scaleKnots_[knot].value[0] + alpha * scaleKnots_[knot + 1].value[0];
+}
+
+void SingleSessionProblem::scaleKnots_apply(const std::vector<int64_t>& worldPointAnchorRig) {
+  if (scaleKnots_.empty()) {
+    return;
+  }
+  // positions of the IMU, rebuilt from the steps
+  std::unordered_map<int64_t, Vec3> oldPos, newPos;
+  Vec3 prevOld = Vec3::Zero(), prevNew = Vec3::Zero();
+  int64_t prevTimestampUs = -1;
+  const auto rigs = sortedRigIndices();
+  for (const int64_t j : rigs) {
+    const auto& rig = findOrDie(inertialPoses_, j);
+    const Vec3 pos = rig.T_bodyImu_world.value.inverse().translation();
+    Vec3 pos2 = pos;
+    if (prevTimestampUs >= 0) {
+      pos2 = prevNew +
+          (pos - prevOld) / scaleKnots_valueAt((prevTimestampUs + rig.timestampUs) / 2);
+    }
+    oldPos[j] = pos;
+    newPos[j] = pos2;
+    prevOld = pos;
+    prevNew = pos2;
+    prevTimestampUs = rig.timestampUs;
+  }
+  // points
+  for (size_t i = 0; i < pointTracks_.size(); i++) {
+    Vec3& v = pointTracks_[i].value;
+    const PointHost& host = pointHosts_[i];
+    if (host.rigIndex >= 0) {
+      const double s = scaleKnots_valueAt(findOrDie(inertialPoses_, host.rigIndex).timestampUs);
+      if (host.inverseDepth) {
+        v[2] *= s;
+      } else {
+        v /= s;
+      }
+    } else if (i < worldPointAnchorRig.size() && oldPos.count(worldPointAnchorRig[i]) > 0) {
+      const int64_t j = worldPointAnchorRig[i];
+      const double s = scaleKnots_valueAt(findOrDie(inertialPoses_, j).timestampUs);
+      v = newPos[j] + (v - oldPos[j]) / s;
+    }
+  }
+  // poses and velocities
+  for (const int64_t j : rigs) {
+    auto& rig = findOrDie(inertialPoses_, j);
+    const SO3 R_bodyImu_world = rig.T_bodyImu_world.value.so3();
+    rig.T_bodyImu_world.value = SE3(R_bodyImu_world, -(R_bodyImu_world * newPos[j]));
+    rig.vel_world.value /= scaleKnots_valueAt(rig.timestampUs);
+  }
+  for (auto& knot : scaleKnots_) {
+    knot.value[0] = 1.0;
+  }
+}
+
 std::pair<int64_t, double> SingleSessionProblem::scaleKnotAt(int64_t timestampUs) const {
   XR_CHECK_GE(scaleKnots_.size(), 2);
   const double x = (timestampUs - scaleKnotsStartUs_) / scaleKnotsSpacingUs_;

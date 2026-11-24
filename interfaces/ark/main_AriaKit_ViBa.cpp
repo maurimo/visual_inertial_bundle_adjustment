@@ -95,6 +95,18 @@ static int runPass(
       }
       adapter.updateRollingShutterData();
     };
+    if (problem.numScaleKnots() > 0 && initSettings.scaleKnotIterations > 0) {
+      // scale-knot stage(s): a few iterations with the knots, then trajectory and points are
+      // divided by them; the optimization proper runs without them
+      auto stageSettings = settings;
+      stageSettings.maxNumIterations = initSettings.scaleKnotIterations;
+      for (int stage = 0; stage < initSettings.scaleKnotStages; stage++) {
+        std::cout << fmt::format("Scale-knot stage {}", stage + 1) << std::endl;
+        opt.optimize(stageSettings);
+        adapter.applyScaleKnots();
+      }
+      problem.scaleKnots_setActive(false);
+    }
     auto summary = opt.optimize(settings);
     if (optSettings.triggerDebuggingOfNonlinearities > 0) {
       std::cout << "Exiting... happy debugging!" << std::endl;
@@ -124,7 +136,7 @@ static int runPass(
 
     saveCloseLoopTrajectory(problem, fData, matcher, outputsDir / "closed_loop_framerate_trajectory.csv");
 
-    if (problem.numScaleKnots() > 0) {
+    if (problem.numScaleKnots() > 0 && initSettings.scaleKnotIterations <= 0) {
       std::ofstream knots(outputsDir / "scale_knots.csv");
       knots << "timestamp_us,scale\n";
       for (int64_t i = 0; i < problem.numScaleKnots(); i++) {
@@ -212,6 +224,9 @@ int main(int argc, const char* argv[]) {
       std::cout << fmt::format("=== Pass {} of {} ===", pass, numPasses) << std::endl;
     }
     InitSettings passSettings = initSettings;
+    if (passSettings.plsDir.empty()) {
+      passSettings.plsDir = filterPathIn.string();
+    }
     if (pass < initSettings.skyFromPass) {
       passSettings.skyMinDist = passSettings.skyMinDistOverBaseline = 0.0;
     }

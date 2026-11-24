@@ -87,6 +87,7 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
   skyMinElevationDeg_ = s.skyMinElevationDeg;
   skyMinDist_ = s.skyMinDist;
   skyMinDistOverBaseline_ = s.skyMinDistOverBaseline;
+  plsInit(s);
 
   if (!paramInitSettings.poseToGt && !paramInitSettings.velToGt && !paramInitSettings.omegaToGt) {
     initAllParams(paramInitSettings);

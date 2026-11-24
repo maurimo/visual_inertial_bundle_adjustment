@@ -127,8 +127,9 @@ struct RollingShutterVisualFactor {
   RollingShutterVisualFactor(
       const Vec2& projBaseRes,
       const Mat22& sqrtH_BaseRes,
-      const RollingShutterData& rsData)
-      : visFactor_(projBaseRes, sqrtH_BaseRes), rsData_(rsData) {}
+      const RollingShutterData& rsData,
+      const double* extraDtSec = nullptr)
+      : visFactor_(projBaseRes, sqrtH_BaseRes), rsData_(rsData), extraDtSec_(extraDtSec) {}
 
   std::optional<Vec2> operator()(
       const Vec3& worldPt,
@@ -142,8 +143,8 @@ struct RollingShutterVisualFactor {
       Ref<Mat<2, Eigen::Dynamic>> cameraModel_Jacobian,
       Ref<Mat23> vel_world_Jacobian) const {
     const double timeParamFactor = visFactor_.imageRow() / cameraModel.imageHeight() - 0.5;
-    const double dtSec =
-        cameraModel.readoutTimeSec() * timeParamFactor - cameraModel.timeOffsetSec_Dev_Camera();
+    const double dtSec = cameraModel.readoutTimeSec() * timeParamFactor -
+        cameraModel.timeOffsetSec_Dev_Camera() + (extraDtSec_ != nullptr ? *extraDtSec_ : 0.0);
 
     const bool needVelocities = kUseAnalyticTimeOffsetJac && !isNull(cameraModel_Jacobian) &&
         (cameraModel.estimateReadoutTime || cameraModel.estimateTimeOffset);
@@ -213,6 +214,8 @@ struct RollingShutterVisualFactor {
 
   const VisualFactor visFactor_;
   const RollingShutterData& rsData_;
+  // a time added to that of this observation (nullptr: none), see addObservationTimeShift
+  const double* extraDtSec_;
 };
 
 // The pose of the body at the time an observation was taken (its image row and the time offset of
@@ -224,11 +227,13 @@ struct RollingShutterShift {
       double imageRow,
       const CameraModelParam& cameraModel,
       const Vec3& vel_world,
-      const SE3& T_bodyImu_world)
+      const SE3& T_bodyImu_world,
+      const double* extraDtSec)
       : timeParamFactor(imageRow / cameraModel.imageHeight() - 0.5),
         dtSec(
             cameraModel.readoutTimeSec() * timeParamFactor -
-            cameraModel.timeOffsetSec_Dev_Camera()) {
+            cameraModel.timeOffsetSec_Dev_Camera() +
+            (extraDtSec != nullptr ? *extraDtSec : 0.0)) {
     const RollingShutterEstimate shiftedEst =
         rsData.getEstimate(dtSec, vel_world, T_bodyImu_world.inverse(), false);
     T_bodyImuAtT_bodyImuMid = shiftedEst.T_midImu_imuAtT.inverse();
@@ -292,8 +297,11 @@ struct RollingShutterVisualFactorHosted {
       const Mat22& sqrtH_BaseRes,
       bool inverseDepth,
       const Mat33& R0,
-      const RollingShutterData& rsData)
-      : visFactor_(projBaseRes, sqrtH_BaseRes, inverseDepth, R0), rsData_(rsData) {}
+      const RollingShutterData& rsData,
+      const double* extraDtSec = nullptr)
+      : visFactor_(projBaseRes, sqrtH_BaseRes, inverseDepth, R0),
+        rsData_(rsData),
+        extraDtSec_(extraDtSec) {}
 
   std::optional<Vec2> operator()(
       const Vec3& pt,
@@ -309,7 +317,7 @@ struct RollingShutterVisualFactorHosted {
       Ref<Mat<2, Eigen::Dynamic>> cameraModel_Jacobian,
       Ref<Mat23> vel_world_Jacobian) const {
     const RollingShutterShift shift(
-        rsData_, visFactor_.imageRow(), cameraModel, vel_world, T_bodyImu_world);
+        rsData_, visFactor_.imageRow(), cameraModel, vel_world, T_bodyImu_world, extraDtSec_);
     const bool timeColumns =
         !isNull(cameraModel_Jacobian) && RollingShutterShift::hasTimeColumns(cameraModel);
     const bool needPoseJacobian =
@@ -345,6 +353,7 @@ struct RollingShutterVisualFactorHosted {
 
   const VisualFactorHosted visFactor_;
   const RollingShutterData& rsData_;
+  const double* extraDtSec_;
 };
 
 // Rolling shutter / camera time offset, point expressed in a host rig, observation from the host
@@ -358,8 +367,11 @@ struct RollingShutterVisualFactorHostRig {
       const Mat22& sqrtH_BaseRes,
       bool inverseDepth,
       const Mat33& R0,
-      const RollingShutterData& rsData)
-      : visFactor_(projBaseRes, sqrtH_BaseRes, inverseDepth, R0), rsData_(rsData) {}
+      const RollingShutterData& rsData,
+      const double* extraDtSec = nullptr)
+      : visFactor_(projBaseRes, sqrtH_BaseRes, inverseDepth, R0),
+        rsData_(rsData),
+        extraDtSec_(extraDtSec) {}
 
   std::optional<Vec2> operator()(
       const Vec3& pt,
@@ -373,7 +385,7 @@ struct RollingShutterVisualFactorHostRig {
       Ref<Mat<2, Eigen::Dynamic>> cameraModel_Jacobian,
       Ref<Mat23> vel_world_Jacobian) const {
     const RollingShutterShift shift(
-        rsData_, visFactor_.imageRow(), cameraModel, vel_world, T_bodyImu_world);
+        rsData_, visFactor_.imageRow(), cameraModel, vel_world, T_bodyImu_world, extraDtSec_);
     const bool timeColumns =
         !isNull(cameraModel_Jacobian) && RollingShutterShift::hasTimeColumns(cameraModel);
     const bool needShiftJacobian =
@@ -409,6 +421,7 @@ struct RollingShutterVisualFactorHostRig {
 
   const VisualFactorHosted visFactor_;
   const RollingShutterData& rsData_;
+  const double* extraDtSec_;
 };
 
 void SingleSessionProblem::addVisualFactor(
@@ -417,7 +430,8 @@ void SingleSessionProblem::addVisualFactor(
     PointVariable& pointTrackVar,
     const Vec2& projBaseRes,
     const Mat22& sqrtH_BaseRes,
-    const SoftLossType& reprojErrorLoss) {
+    const SoftLossType& reprojErrorLoss,
+    const double* timeShiftSec) {
   const int64_t cameraModelIndex = findOrDie(rigCamToModelIndex_, {rigIndex, cameraIndex});
   const int64_t cameraExtrinsicsIndex = findOrDie(rigCamToExtrIndex_, {rigIndex, cameraIndex});
 
@@ -430,10 +444,11 @@ void SingleSessionProblem::addVisualFactor(
   small_thing::FactorStoreBase* factorStorePtr;
   int64_t factorIndex;
 
-  if (camVar.value.hasTimeOffset() || camVar.value.isRollingShutter()) {
+  if (camVar.value.hasTimeOffset() || camVar.value.isRollingShutter() ||
+      timeShiftSec != nullptr) {
     const auto& rsData = findOrDie(rigToRSData_, rigIndex);
     std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
-        RollingShutterVisualFactor(projBaseRes, sqrtH_BaseRes, rsData),
+        RollingShutterVisualFactor(projBaseRes, sqrtH_BaseRes, rsData, timeShiftSec),
         reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
         pointTrackVar,
         rigVar.T_bodyImu_world,
@@ -465,12 +480,19 @@ void SingleSessionProblem::addVisualFactor(
     int64_t pointTrackIndex,
     const Vec2& projBaseRes,
     const Mat22& sqrtH_BaseRes,
-    const SoftLossType& reprojErrorLoss) {
+    const SoftLossType& reprojErrorLoss,
+    const double* timeShiftSec) {
   auto& pointTrackVar = pointTrack(pointTrackIndex);
   const PointHost& host = pointTrack_host(pointTrackIndex);
   if (host.rigIndex < 0) { // world coordinates
     addVisualFactor(
-        rigIndex, cameraIndex, pointTrackVar, projBaseRes, sqrtH_BaseRes, reprojErrorLoss);
+        rigIndex,
+        cameraIndex,
+        pointTrackVar,
+        projBaseRes,
+        sqrtH_BaseRes,
+        reprojErrorLoss,
+        timeShiftSec);
     return;
   }
 
@@ -480,7 +502,8 @@ void SingleSessionProblem::addVisualFactor(
   auto& rigVar = findOrDie(inertialPoses_, rigIndex);
   auto& T_Cam_BodyImu_var = Ts_Cam_BodyImu_[cameraExtrinsicsIndex].var;
   auto& camVar = cameraModels_[cameraModelIndex].var;
-  const bool rollingShutter = camVar.value.hasTimeOffset() || camVar.value.isRollingShutter();
+  const bool rollingShutter = camVar.value.hasTimeOffset() || camVar.value.isRollingShutter() ||
+      timeShiftSec != nullptr;
 
   if (rigIndex == host.rigIndex) {
     if (rollingShutter) {
@@ -490,7 +513,8 @@ void SingleSessionProblem::addVisualFactor(
               sqrtH_BaseRes,
               host.inverseDepth,
               host.R0,
-              findOrDie(rigToRSData_, rigIndex)),
+              findOrDie(rigToRSData_, rigIndex),
+              timeShiftSec),
           reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
           pointTrackVar,
           rigVar.T_bodyImu_world,
@@ -514,7 +538,8 @@ void SingleSessionProblem::addVisualFactor(
               sqrtH_BaseRes,
               host.inverseDepth,
               host.R0,
-              findOrDie(rigToRSData_, rigIndex)),
+              findOrDie(rigToRSData_, rigIndex),
+              timeShiftSec),
           reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
           pointTrackVar,
           hostVar.T_bodyImu_world,
