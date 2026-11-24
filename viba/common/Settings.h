@@ -67,6 +67,45 @@ struct InitSettings {
   double imuLossCutoff = kImuErrorHuberLossCutoff;
 
   bool noRgb = false;
+
+  // Sky points. A track is left out when, from all the cameras that see it, the triangulated
+  // point is at least skyMinElevationDeg above the horizon (the horizon being orthogonal to
+  // gravity) and far: farther than skyMinDist meters, or than skyMinDistOverBaseline times the
+  // largest distance between two of its cameras (each test is off when 0). Applied from pass
+  // skyFromPass on (see --num-passes), when the trajectory is good enough for "far" to mean it.
+  double skyMinElevationDeg = 5.0;
+  double skyMinDist = 0.0;
+  double skyMinDistOverBaseline = 0.0;
+  int skyFromPass = 2;
+
+  // Gravity as a function of time: one vector every gravityKnotSec seconds (0: one constant world
+  // gravity), an inertial factor uses the linear interpolation at its mid time. Each knot has a
+  // prior at the nominal gravity and a random walk to the next knot, with separate standard
+  // deviations [m/s2] for the vertical component (magnitude) and the horizontal ones
+  // (direction). A non-positive direction std holds the direction.
+  double gravityKnotSec = 0.0;
+  double gravityMagStd = 0.05;
+  double gravityDirStd = 0.0;
+  double gravityRwMagStd = 0.005;
+  double gravityRwDirStd = 0.0;
+  // nominal gravity magnitude = gravityScale * 9.81 (to check the scale symmetry)
+  double gravityScale = 1.0;
+
+  // Rotation of the Earth about the local vertical [rad/s] (7.292e-5 * sin(latitude); positive in
+  // the northern hemisphere), taken out of the gyroscope's rotation in the inertial factors. The
+  // horizontal component needs the direction of north and is left to the gyroscope bias. 0: off.
+  double earthRateUp = 0.0;
+
+  // Scale of the IMU's metric as a function of time: one factor every scaleKnotSec seconds (0:
+  // off), linearly interpolated at the mid time of an inertial factor, that multiplies gravity and
+  // the integrated accelerometer signal together (velocity and position increments). Where the
+  // trajectory is too large by some factor the knots go to that factor: a slow scale drift of the
+  // trajectory, which otherwise needs a coordinated move of all poses, becomes a local variable.
+  // The caller then divides the trajectory by the knots and sets them back to 1. Each knot has a
+  // prior at 1 and a random walk to the next knot.
+  double scaleKnotSec = 0.0;
+  double scaleKnotStd = 0.05;
+  double scaleKnotRwStd = 0.01;
 };
 
 struct OptimizerSettings {
@@ -81,6 +120,8 @@ struct OptimizerSettings {
   bool dontOptimize = false;
   bool verifyJacobians = false;
   unsigned int numThreads = 8;
+  double initialDamping = 1e-5;
+  double minDamping = 1e-9;
 
   int triggerDebuggingOfNonlinearities = -1;
 };

@@ -189,6 +189,73 @@ void InitSettings::addCommandLine(CLI::App& app) {
       ->group("Point parameterization");
 
   app.add_option(
+         "--sky-min-dist",
+         skyMinDist,
+         "Leave out tracks seen above the horizon and farther than this [m] (default: 0, off)")
+      ->group("Sky points");
+  app.add_option(
+         "--sky-min-dist-over-baseline",
+         skyMinDistOverBaseline,
+         "Leave out tracks seen above the horizon and farther than this many times the largest "
+         "distance between two of their cameras (default: 0, off)")
+      ->group("Sky points");
+  app.add_option(
+         "--sky-min-elevation",
+         skyMinElevationDeg,
+         "Elevation above the horizon [deg] from which a far track counts as sky (default: 5)")
+      ->group("Sky points");
+  app.add_option(
+         "--sky-from-pass", skyFromPass, "First pass that leaves out sky points (default: 2)")
+      ->group("Sky points");
+
+  app.add_option(
+         "--gravity-knot-sec",
+         gravityKnotSec,
+         "Gravity as a function of time, one vector every this many seconds, interpolated "
+         "(default: 0, one constant gravity)")
+      ->group("Gravity");
+  app.add_option(
+         "--gravity-mag-std", gravityMagStd, "Prior std of a knot's magnitude [m/s2] (default: 0.05)")
+      ->group("Gravity");
+  app.add_option(
+         "--gravity-dir-std",
+         gravityDirStd,
+         "Prior std of a knot's horizontal components [m/s2] (default: 0, direction held)")
+      ->group("Gravity");
+  app.add_option(
+         "--gravity-rw-mag-std",
+         gravityRwMagStd,
+         "Random walk std of the magnitude between two knots [m/s2] (default: 0.005)")
+      ->group("Gravity");
+  app.add_option(
+         "--gravity-rw-dir-std",
+         gravityRwDirStd,
+         "Random walk std of the horizontal components between two knots [m/s2] (default: 0)")
+      ->group("Gravity");
+  app.add_option(
+         "--gravity-scale", gravityScale, "Nominal gravity magnitude, in units of 9.81 m/s2")
+      ->group("Gravity");
+  app.add_option(
+         "--earth-rate-up",
+         earthRateUp,
+         "Rotation of the Earth about the local vertical [rad/s], 7.292e-5 * sin(latitude) "
+         "(default: 0, not modelled)")
+      ->group("Gravity");
+  app.add_option(
+         "--scale-knot-sec",
+         scaleKnotSec,
+         "Scale of the IMU's metric (gravity and integrated accelerometer together) as a function "
+         "of time, one knot every this many seconds, interpolated (default: 0, off)")
+      ->group("Gravity");
+  app.add_option("--scale-knot-std", scaleKnotStd, "Prior std of a scale knot (default: 0.05)")
+      ->group("Gravity");
+  app.add_option(
+         "--scale-knot-rw-std",
+         scaleKnotRwStd,
+         "Random walk std between two scale knots (default: 0.01)")
+      ->group("Gravity");
+
+  app.add_option(
       "--json-report",
       jsonReport,
       "Path for JSON output containing a report on the optimization process");
@@ -229,6 +296,9 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
       ->group(group);
   app.add_option("--num-threads", numThreads, "Number of threads to use for optimization")
       ->group(group);
+  app.add_option("--initial-damping", initialDamping, "Initial damping (default: 1e-5)")
+      ->group(group);
+  app.add_option("--min-damping", minDamping, "Lowest damping (default: 1e-9)")->group(group);
   if (!skipAdvanced) {
     app.add_option(
            "--debug-nonlinearities-at",
@@ -274,7 +344,9 @@ Optimizer::Settings OptimizerSettings::getSettings(int numRigs, bool muted) cons
       .solverType = *linearSolver,
       .pcgMaxIterations = pcgMaxIterations,
       .relativeCostTolerance = kRelativeCostTolerance,
+      .damping = initialDamping,
       .dampingAdjustOnGoodStep = kDampingAdjustOnGoodStep,
+      .dampingMin = minDamping,
       .stopOnlyAtDampingFloor = true,
       .triggerDebuggingOfNonlinearities = triggerDebuggingOfNonlinearities,
   };
