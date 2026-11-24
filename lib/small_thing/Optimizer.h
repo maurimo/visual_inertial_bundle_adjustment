@@ -59,6 +59,12 @@ class Optimizer {
     double dampingMax = 1e8;
     double dampingMin = 1e-9;
 
+    // if set, no stopping tolerance counts as hit while the damping is above dampingMin.
+    // A joint correction of many variables (e.g. of the scale or heading of a long trajectory
+    // together with its points) only starts once the damping has come down: until then the
+    // cost falls slowly, and a cost tolerance alone would stop before the correction happens.
+    bool stopOnlyAtDampingFloor = false;
+
     // desired cost reduction, relative to model cost decrease
     // if this is not obtained, smaller step multiples will be attempted
     double minRelativeCostReduction = 0.3;

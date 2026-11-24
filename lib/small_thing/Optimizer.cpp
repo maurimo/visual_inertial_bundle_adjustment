@@ -1016,6 +1016,9 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
         : costReduction < settings.absoluteCostTolerance      ? "absolute cost"
         : ratioS2Vn2 < settings.variablesTolerance            ? "variable"
                                                               : nullptr;
+    if (settings.stopOnlyAtDampingFloor && damping > settings.dampingMin * (1.0 + 1e-7)) {
+      toleranceHit = nullptr;
+    }
     if (newCost > prevCost || !failureRateIsAcceptable) { // failure!
       if (lastTroubledIteration != iterationNum - 1) { // start of new troubled sequence?
         troubledSeqStartDamping = damping;

@@ -259,11 +259,23 @@ Optimizer::Settings OptimizerSettings::getSettings(int numRigs, bool muted) cons
     }
   }
 
+  // Stopping and damping schedule (optimizer defaults: relative cost tolerance 1e-10, damping x0.7
+  // per good step, tolerances active at any damping). With the defaults a run spends most of its
+  // iterations after the result is final (sub-millimeter changes), while the joint corrections of
+  // trajectory and points (scale, heading) only happen once the damping has decayed from 1e-5 to
+  // about 1e-8, i.e. after 20-30 iterations. Hence: the damping comes down by 3 per good step, and
+  // a looser cost tolerance that only counts once the damping is at its floor.
+  constexpr double kRelativeCostTolerance = 1e-8;
+  constexpr double kDampingAdjustOnGoodStep = 1.0 / 3.0;
+
   return {
       .maxNumIterations = maxNumIterations,
       .numThreads = numThreads,
       .solverType = *linearSolver,
       .pcgMaxIterations = pcgMaxIterations,
+      .relativeCostTolerance = kRelativeCostTolerance,
+      .dampingAdjustOnGoodStep = kDampingAdjustOnGoodStep,
+      .stopOnlyAtDampingFloor = true,
       .triggerDebuggingOfNonlinearities = triggerDebuggingOfNonlinearities,
   };
 }
