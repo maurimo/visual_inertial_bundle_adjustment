@@ -178,6 +178,8 @@ class SingleSessionAdapter {
   // Divide trajectory and points by the scale knots and set the knots back to 1 (the end of a
   // scale-knot stage, see InitSettings::scaleKnotSec)
   void applyScaleKnots();
+  // the same for the yaw-drift knots (InitSettings::yawKnotSec)
+  void applyYawKnots();
 
  private:
   using RigSensorToIndex = std::unordered_map<RigSensorIndices, int64_t, pair_hash>;
@@ -345,6 +347,7 @@ class SingleSessionAdapter {
   double plsT0Sec_ = 0.0;
   double plsRowSec_ = 0.0;
   double plsSmearPx_[2] = {0.0, 0.0};
+  double plsLinearSecPerRow_ = 0.0;
   std::vector<std::vector<std::pair<int64_t, double>>> plsExposure_; // per camera: (us, s)
   std::vector<int8_t> plsKinds_; // per row of the observations (empty: unknown)
   std::vector<PlsObservation> plsObs_;

@@ -8,6 +8,7 @@
 #include <viba/problem/SingleSessionProblem.h>
 
 #include <viba/problem/VisualFactorRelative.h>
+#include <viba/problem/YawDrift.h>
 
 #include <rolling_shutters/RollingShutterData.h>
 #include <viba/common/Enumerate.h>
@@ -218,6 +219,16 @@ struct RollingShutterVisualFactor {
   const double* extraDtSec_;
 };
 
+// How the per-observation time (addObservationTimeShift) moves the body, see
+// InitSettings::plsMotion. 0: as a rolling shutter does (the motion of the body from the inertial
+// samples, the velocity and gravity, with all its Jacobians); 1: the same motion, but velocity and
+// attitude are not pulled by it (no Jacobian of the motion on them: the model is a shift of the
+// observation, as in the filter this model comes from); 2: rotation only.
+int gTimeShiftMotion = 0;
+void setTimeShiftMotion(int mode) {
+  gTimeShiftMotion = mode;
+}
+
 // The pose of the body at the time an observation was taken (its image row and the time offset of
 // the camera) from the pose at the time of the frame, with what the rolling-shutter factors for
 // points expressed in a host rig need of its derivatives. Same model as RollingShutterVisualFactor.
@@ -237,7 +248,12 @@ struct RollingShutterShift {
     const RollingShutterEstimate shiftedEst =
         rsData.getEstimate(dtSec, vel_world, T_bodyImu_world.inverse(), false);
     T_bodyImuAtT_bodyImuMid = shiftedEst.T_midImu_imuAtT.inverse();
+    const int motion = extraDtSec != nullptr ? gTimeShiftMotion : 0;
+    if (motion == 2) {
+      T_bodyImuAtT_bodyImuMid.translation().setZero();
+    }
     T_bodyImuAtT_world = T_bodyImuAtT_bodyImuMid * T_bodyImu_world;
+    velocityScale = motion == 0 ? 1.0 : 0.0;
     // The part of the displacement that turns with the body, u = R_mid_world * (v dt + g dt^2 / 2):
     // T_bodyImuMid_bodyImuAtT has the translation (inertial part) + u, so that with the pose at
     // the frame's time perturbed on the left by (dt, dw) the shift T_bodyImuAtT_bodyImuMid is
@@ -248,12 +264,18 @@ struct RollingShutterShift {
         SO3::hat(
             T_bodyImu_world.so3() *
             (vel_world * dtSec + 0.5 * dtSec * dtSec * rsData.gravityWorld()));
+    if (motion != 0) {
+      dShift_dRotMid.setZero();
+    }
 
     constexpr double kEpsilon = 1e-6;
     const RollingShutterEstimate shiftedEstP =
         rsData.getEstimate(dtSec + kEpsilon, vel_world, T_bodyImu_world.inverse(), false);
     dPose_dTime = (shiftedEstP.T_midImu_imuAtT.inverse() * shiftedEst.T_midImu_imuAtT).log() /
         kEpsilon; /* NUMERIC */
+    if (motion == 2) {
+      dPose_dTime.head<3>().setZero();
+    }
   }
 
   static bool hasTimeColumns(const CameraModelParam& cameraModel) {
@@ -276,7 +298,8 @@ struct RollingShutterShift {
   }
 
   Mat23 velocityJacobian(const Mat26& poseAtT_Jacobian) const {
-    return poseAtT_Jacobian.leftCols<3>() * T_bodyImuAtT_world.so3().matrix() * (-dtSec);
+    return poseAtT_Jacobian.leftCols<3>() * T_bodyImuAtT_world.so3().matrix() *
+        (-dtSec * velocityScale);
   }
 
   double timeParamFactor;
@@ -284,6 +307,7 @@ struct RollingShutterShift {
   SE3 T_bodyImuAtT_bodyImuMid;
   SE3 T_bodyImuAtT_world;
   Mat33 dShift_dRotMid;
+  double velocityScale = 1.0;
   Vec6 dPose_dTime;
 };
 
@@ -531,31 +555,75 @@ void SingleSessionProblem::addVisualFactor(
     }
   } else {
     auto& hostVar = findOrDie(inertialPoses_, host.rigIndex);
+    // yaw-drift knots: rigs host (A) and observer (B); a plain factor if they are more than one
+    // knot interval apart
+    const int yawRigA = yawKnots_.empty() ? 0 : findOrDie(yawRigOrder_, host.rigIndex);
+    const int yawRigB = yawKnots_.empty() ? 0 : findOrDie(yawRigOrder_, rigIndex);
+    const int yawKnot = yawKnots_.empty() ? -1 : yawPath_.knotPairFor(yawRigA, yawRigB);
+    const bool yawDrift = yawKnot >= 0;
+    if (!yawKnots_.empty() && !yawDrift) {
+      yawNumTooLong_++;
+    }
     if (rollingShutter) {
-      opt_.addFactor(
-          RollingShutterVisualFactorHosted(
-              projBaseRes,
-              sqrtH_BaseRes,
-              host.inverseDepth,
-              host.R0,
-              findOrDie(rigToRSData_, rigIndex),
-              timeShiftSec),
-          reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
-          pointTrackVar,
-          hostVar.T_bodyImu_world,
-          rigVar.T_bodyImu_world,
-          T_Cam_BodyImu_var,
-          camVar,
-          rigVar.vel_world);
+      const RollingShutterVisualFactorHosted factor(
+          projBaseRes,
+          sqrtH_BaseRes,
+          host.inverseDepth,
+          host.R0,
+          findOrDie(rigToRSData_, rigIndex),
+          timeShiftSec);
+      if (yawDrift) {
+        opt_.addFactor(
+            YawDrifted<
+                RollingShutterVisualFactorHosted, 2, 1, -1, 2, 5, //
+                Vec3, SE3, SE3, SE3, CameraModelParam, Vec3>(
+                factor, &yawPath_, yawRigA, yawRigB, yawKnot),
+            reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+            pointTrackVar,
+            hostVar.T_bodyImu_world,
+            rigVar.T_bodyImu_world,
+            T_Cam_BodyImu_var,
+            camVar,
+            rigVar.vel_world,
+            yawKnots_[yawKnot],
+            yawKnots_[yawKnot + 1]);
+      } else {
+        opt_.addFactor(
+            RollingShutterVisualFactorHosted(factor),
+            reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+            pointTrackVar,
+            hostVar.T_bodyImu_world,
+            rigVar.T_bodyImu_world,
+            T_Cam_BodyImu_var,
+            camVar,
+            rigVar.vel_world);
+      }
     } else {
-      opt_.addFactor(
-          VisualFactorHosted(projBaseRes, sqrtH_BaseRes, host.inverseDepth, host.R0),
-          reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
-          pointTrackVar,
-          hostVar.T_bodyImu_world,
-          rigVar.T_bodyImu_world,
-          T_Cam_BodyImu_var,
-          camVar);
+      const VisualFactorHosted factor(projBaseRes, sqrtH_BaseRes, host.inverseDepth, host.R0);
+      if (yawDrift) {
+        opt_.addFactor(
+            YawDrifted<
+                VisualFactorHosted, 2, 1, -1, 2, -1, //
+                Vec3, SE3, SE3, SE3, CameraModelParam>(
+                factor, &yawPath_, yawRigA, yawRigB, yawKnot),
+            reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+            pointTrackVar,
+            hostVar.T_bodyImu_world,
+            rigVar.T_bodyImu_world,
+            T_Cam_BodyImu_var,
+            camVar,
+            yawKnots_[yawKnot],
+            yawKnots_[yawKnot + 1]);
+      } else {
+        opt_.addFactor(
+            VisualFactorHosted(factor),
+            reprojErrorLoss, // soft loss (Huber/Cauchy/etc...)
+            pointTrackVar,
+            hostVar.T_bodyImu_world,
+            rigVar.T_bodyImu_world,
+            T_Cam_BodyImu_var,
+            camVar);
+      }
     }
   }
 }

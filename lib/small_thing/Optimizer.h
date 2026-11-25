@@ -94,6 +94,9 @@ class Optimizer {
 
     // just a callback invoked before every step
     PreStepCallback preStepCallback;
+    // called after every accepted step; returning true counts as a tolerance hit ("user"), with
+    // the same rules as the cost tolerances (damping floor, consecutive iterations)
+    std::function<bool(int)> userConvergedCallback;
   };
 
   struct Summary {

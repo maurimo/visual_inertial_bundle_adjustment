@@ -9,6 +9,9 @@
 
 #include <small_thing/Common.h>
 
+#include <functional>
+#include <typeinfo>
+
 #include <baspacho/baspacho/Accessor.h>
 #include <sophus/se2.hpp>
 #include <sophus/se3.hpp>
@@ -297,6 +300,10 @@ class VariableStoreBase {
   virtual const double* restore(const double* data) const = 0;
 
   virtual void unregisterAll() = 0;
+
+  // calls f(index, tangent dim) for every registered variable; name of the variable type
+  virtual void forEachRegistered(const std::function<void(int64_t, int64_t)>& f) const = 0;
+  virtual const char* typeName() const = 0;
 };
 
 // specific class storing variables, can be casted down to "opaque" non-templated VariableStoreBase
@@ -367,6 +374,18 @@ class VariableStore : public VariableStoreBase {
       rSum += s2v;
     }
     return {maxR, rSqSum, rSum, variables.size()};
+  }
+
+  virtual void forEachRegistered(const std::function<void(int64_t, int64_t)>& f) const override {
+    for (const auto& var : variables) {
+      if (var->index >= 0) {
+        f(var->index, var->getTangentDim());
+      }
+    }
+  }
+
+  virtual const char* typeName() const override {
+    return typeid(typename Variable::DataType).name();
   }
 
   virtual void unregisterAll() override {

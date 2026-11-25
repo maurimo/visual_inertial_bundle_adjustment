@@ -6,6 +6,7 @@
  */
 
 // @lint-ignore-every CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
+#include <cstdlib>
 #include <viba/common/Enumerate.h>
 #include <viba/problem/Histograms.h>
 #include <viba/problem/SingleSessionProblem.h>
@@ -425,6 +426,245 @@ std::pair<int64_t, double> SingleSessionProblem::scaleKnotAt(int64_t timestampUs
   const int64_t last = scaleKnots_.size() - 2;
   const int64_t k = std::min(std::max<int64_t>(int64_t(std::floor(x)), 0), last);
   return {k, std::min(std::max(x - k, 0.0), 1.0)};
+}
+
+std::vector<double> SingleSessionProblem::yawKnotIntervalsSec() const {
+  std::vector<double> out;
+  for (size_t k = 0; k + 1 < yawPath_.knotTimeSec.size(); k++) {
+    out.push_back(yawPath_.knotTimeSec[k + 1] - yawPath_.knotTimeSec[k]);
+  }
+  return out;
+}
+
+void SingleSessionProblem::yawKnots_init(
+    double minKnotSec,
+    const std::vector<std::pair<int64_t, int64_t>>& trackSpansUs,
+    double priorSqrtH,
+    double randomWalkSqrtH,
+    double shiftSqrtH) {
+  XR_CHECK(yawKnots_.empty());
+  XR_CHECK_GT(minKnotSec, 0.0);
+  const auto rigs = sortedRigIndices();
+  XR_CHECK_GE(rigs.size(), 2);
+  yawKnotsStartUs_ = findOrDie(inertialPoses_, rigs.front()).timestampUs;
+  const double lengthSec =
+      (findOrDie(inertialPoses_, rigs.back()).timestampUs - yawKnotsStartUs_) * 1e-6;
+  yawPath_ = YawDriftPath();
+  yawPath_.shift = shiftSqrtH > 0.0;
+  // the intervals: [0, minKnotSec), then each next one ends minKnotSec later or just after the
+  // last observation of the tracks that start in the current one, whichever is later
+  {
+    std::vector<std::pair<double, double>> spans; // (first, last) [s], sorted by first
+    for (const auto& [firstUs, lastUs] : trackSpansUs) {
+      spans.emplace_back((firstUs - yawKnotsStartUs_) * 1e-6, (lastUs - yawKnotsStartUs_) * 1e-6);
+    }
+    std::sort(spans.begin(), spans.end());
+    const double kAfterSec = 1e-3;
+    auto& times = yawPath_.knotTimeSec;
+    times.push_back(0.0);
+    size_t next = 0;
+    double end = std::min(minKnotSec, lengthSec);
+    while (true) {
+      // a rest shorter than the minimum goes with this interval
+      if (lengthSec - end < minKnotSec) {
+        end = lengthSec;
+      }
+      double lastOfTracks = 0.0;
+      for (; next < spans.size() && spans[next].first < end; next++) {
+        lastOfTracks = std::max(lastOfTracks, spans[next].second);
+      }
+      times.push_back(end);
+      if (end >= lengthSec) {
+        break;
+      }
+      end = std::max(end + minKnotSec, lastOfTracks + kAfterSec);
+    }
+    if (times.size() == 2) {
+      times = {0.0, 0.5 * lengthSec, lengthSec}; // (two knots at least)
+    }
+  }
+  const int numKnots = yawPath_.numKnots();
+  yawRigOrder_.clear();
+  for (const int64_t j : rigs) {
+    const auto& rig = findOrDie(inertialPoses_, j);
+    yawRigOrder_[j] = int(yawPath_.timeSec.size());
+    yawPath_.timeSec.push_back((rig.timestampUs - yawKnotsStartUs_) * 1e-6);
+    yawPath_.refPos.push_back(rig.T_bodyImu_world.value.inverse().translation());
+  }
+  // (the optimizer keeps pointers to the variables: all are created before any factor)
+  yawKnots_.reserve(numKnots);
+  // (test: VIBA_YAW_KNOT_INIT=<rad/s> starts the knots away from 0, alternating in sign, so that
+  // --verify-jacobians checks the factors with a drift)
+  const double testInit =
+      std::getenv("VIBA_YAW_KNOT_INIT") ? std::atof(std::getenv("VIBA_YAW_KNOT_INIT")) : 0.0;
+  for (int i = 0; i < numKnots; i++) {
+    const double sign = i % 2 == 0 ? 1.0 : -0.6;
+    Vec<4> init(testInit * sign, 0.0, 0.0, 0.0);
+    if (yawPath_.shift) {
+      init.tail<3>() = 20.0 * testInit * sign * Vec3(1.0, -0.5, 0.25);
+    }
+    yawKnots_.emplace_back(init);
+  }
+  using Mat44 = Mat<4, 4>;
+  using Mat14 = Mat<1, 4>;
+  // (without the shift the velocities have no other factor: they stay 0)
+  const double shiftPrior = yawPath_.shift ? shiftSqrtH : 1.0;
+  const Vec<4> sqrtH(priorSqrtH, shiftPrior, shiftPrior, shiftPrior);
+  for (int i = 0; i < numKnots; i++) {
+    opt_.addFactor(
+        [sqrtH](const Vec<4>& w, Ref<Mat44>&& wJacobian) -> Vec<4> {
+          if (!isNull(wJacobian)) {
+            wJacobian = Mat44(sqrtH.asDiagonal());
+          }
+          return Vec<4>(sqrtH.cwiseProduct(w));
+        },
+        yawKnots_[i]);
+    if (i + 1 < numKnots && randomWalkSqrtH > 0.0) {
+      opt_.addFactor(
+          [randomWalkSqrtH](
+              const Vec<4>& wPrev,
+              const Vec<4>& wNext,
+              Ref<Mat14>&& wPrevJacobian,
+              Ref<Mat14>&& wNextJacobian) -> Vec<1> {
+            if (!isNull(wPrevJacobian)) {
+              wPrevJacobian.setZero();
+              wPrevJacobian(0, 0) = -randomWalkSqrtH;
+            }
+            if (!isNull(wNextJacobian)) {
+              wNextJacobian.setZero();
+              wNextJacobian(0, 0) = randomWalkSqrtH;
+            }
+            return Vec<1>(randomWalkSqrtH * (wNext[0] - wPrev[0]));
+          },
+          yawKnots_[i],
+          yawKnots_[i + 1]);
+    }
+  }
+}
+
+int64_t SingleSessionProblem::numYawKnots() const {
+  return yawKnots_.size();
+}
+
+int64_t SingleSessionProblem::yawKnotTimestampUs(int64_t knotIndex) const {
+  return yawKnotsStartUs_ + std::llround(yawPath_.knotTimeSec.at(knotIndex) * 1e6);
+}
+
+double SingleSessionProblem::yawKnot(int64_t knotIndex) const {
+  return yawKnots_.at(knotIndex).value[0];
+}
+
+Vec3 SingleSessionProblem::yawKnotShift(int64_t knotIndex) const {
+  return yawKnots_.at(knotIndex).value.tail<3>();
+}
+
+std::vector<SingleSessionProblem::TrueRigState> SingleSessionProblem::yawKnots_trueStates() const {
+  std::vector<TrueRigState> out;
+  const bool drift = !yawKnots_.empty() && yawPath_.active;
+  const auto knot = [&](int k) { return yawKnots_[k].value[0]; };
+  const auto knotVel = [&](int k) {
+    return yawPath_.shift ? Vec3(yawKnots_[k].value.tail<3>()) : Vec3(Vec3::Zero());
+  };
+  double prevPsi = 0.0;
+  Vec3 q = Vec3::Zero();
+  int i = 0;
+  for (const int64_t j : sortedRigIndices()) {
+    const auto& rig = findOrDie(inertialPoses_, j);
+    TrueRigState s{j, rig.timestampUs, rig.T_bodyImu_world.value, rig.vel_world.value, 0.0};
+    if (drift) {
+      XR_CHECK_EQ(findOrDie(yawRigOrder_, j), i);
+      s.psi = yawPath_.psiAt(yawPath_.timeSec[i], knot);
+      q = i == 0
+          ? yawPath_.refPos[0]
+          : Vec3(q + SO3::rotZ(0.5 * (prevPsi + s.psi)) *
+                    (yawPath_.refPos[i] - yawPath_.refPos[i - 1] +
+                     yawPath_.shiftBetween(yawPath_.timeSec[i - 1], yawPath_.timeSec[i], knotVel)));
+      const SO3 Rz = SO3::rotZ(s.psi);
+      const Vec3 pos = rig.T_bodyImu_world.value.inverse().translation();
+      const Vec3 truePos = q + Rz * (pos - yawPath_.refPos[i]);
+      const SO3 R_bodyImu_world = rig.T_bodyImu_world.value.so3() * Rz.inverse();
+      s.T_bodyImu_world = SE3(R_bodyImu_world, -(R_bodyImu_world * truePos));
+      s.vel_world = Rz * rig.vel_world.value;
+      prevPsi = s.psi;
+    }
+    out.push_back(s);
+    i++;
+  }
+  return out;
+}
+
+double SingleSessionProblem::yawKnots_apply() {
+  if (yawKnots_.empty()) {
+    return 0.0;
+  }
+  double psi = 0.0;
+  for (const auto& s : yawKnots_trueStates()) {
+    auto& rig = findOrDie(inertialPoses_, s.rigIndex);
+    rig.T_bodyImu_world.value = s.T_bodyImu_world;
+    rig.vel_world.value = s.vel_world;
+    psi = s.psi;
+  }
+  yawKnotsApplied_.resize(yawKnots_.size(), Vec<4>::Zero());
+  for (size_t k = 0; k < yawKnots_.size(); k++) {
+    yawKnotsApplied_[k] += yawKnots_[k].value;
+    yawKnots_[k].value.setZero();
+  }
+  yawKnots_refreeze();
+  return psi;
+}
+
+std::vector<Vec<4>> SingleSessionProblem::yawKnots_takeApplied() {
+  std::vector<Vec<4>> out(yawKnots_.size(), Vec<4>::Zero());
+  out.swap(yawKnotsApplied_);
+  out.resize(yawKnots_.size(), Vec<4>::Zero());
+  return out;
+}
+
+void SingleSessionProblem::yawKnots_refreeze() {
+  if (yawKnots_.empty()) {
+    return;
+  }
+  for (const auto& knot : yawKnots_) {
+    XR_CHECK(knot.value.isZero(0.0));
+  }
+  for (const auto& [j, i] : yawRigOrder_) {
+    yawPath_.refPos[i] = findOrDie(inertialPoses_, j).T_bodyImu_world.value.inverse().translation();
+  }
+}
+
+void SingleSessionProblem::yawKnots_gaugeTest(double rate) {
+  XR_CHECK(!yawKnots_.empty() && yawPath_.active);
+  // the true states now, then the knots, then the variables that give the same true states
+  const auto before = yawKnots_trueStates();
+  for (size_t k = 0; k < yawKnots_.size(); k++) {
+    const double f = k % 3 == 0 ? 1.0 : k % 3 == 1 ? -0.7 : 0.4;
+    yawKnots_[k].value[0] = rate * f;
+    if (yawPath_.shift) {
+      yawKnots_[k].value.tail<3>() = 30.0 * rate * f * Vec3(1.0, -0.5, 0.25);
+    }
+  }
+  const auto knot = [&](int k) { return yawKnots_[k].value[0]; };
+  const auto knotVel = [&](int k) {
+    return yawPath_.shift ? Vec3(yawKnots_[k].value.tail<3>()) : Vec3(Vec3::Zero());
+  };
+  double prevPsi = 0.0;
+  Vec3 q = Vec3::Zero();
+  for (size_t i = 0; i < before.size(); i++) {
+    const double psi = yawPath_.psiAt(yawPath_.timeSec[i], knot);
+    q = i == 0
+        ? yawPath_.refPos[0]
+        : Vec3(q + SO3::rotZ(0.5 * (prevPsi + psi)) *
+                  (yawPath_.refPos[i] - yawPath_.refPos[i - 1] +
+                   yawPath_.shiftBetween(yawPath_.timeSec[i - 1], yawPath_.timeSec[i], knotVel)));
+    prevPsi = psi;
+    const SO3 Rz = SO3::rotZ(psi);
+    const Vec3 truePos = before[i].T_bodyImu_world.inverse().translation();
+    const Vec3 pos = yawPath_.refPos[i] + Rz.inverse() * (truePos - q);
+    const SO3 R_bodyImu_world = before[i].T_bodyImu_world.so3() * Rz;
+    auto& rig = findOrDie(inertialPoses_, before[i].rigIndex);
+    rig.T_bodyImu_world.value = SE3(R_bodyImu_world, -(R_bodyImu_world * pos));
+    rig.vel_world.value = Rz.inverse() * before[i].vel_world;
+  }
 }
 
 Vec3 SingleSessionProblem::gravityAt(int64_t timestampUs) const {

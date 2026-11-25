@@ -7,6 +7,7 @@
 
 #include <viba/common/Enumerate.h>
 #include <viba/problem/SingleSessionProblem.h>
+#include <viba/problem/YawDrift.h>
 
 #include <logging/Checks.h>
 #define DEFAULT_LOG_CHANNEL "ViBa::InertialFactor"
@@ -488,25 +489,47 @@ void SingleSessionProblem::addInertialFactor(
   // (scale knots: main IMU only; the factors of the other IMUs are the plain ones)
   if (!scaleKnots_.empty() && imuIndex == 0) {
     XR_CHECK(gravityKnots_.empty(), "Scale knots and gravity knots cannot be used together");
-    const auto [knot, alpha] =
-        scaleKnotAt((prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2);
-    std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
-        InertialFactorScaleKnots(
-            preintegrationData,
-            alpha,
-            gravityWorld().value.vec,
-            earthRateWorld_,
-            &scaleKnotsActive_),
-        H,
-        imuErrorLoss,
-        calibVar,
-        prevPoseVar.T_bodyImu_world,
-        prevPoseVar.vel_world,
-        nextPoseVar.T_bodyImu_world,
-        nextPoseVar.vel_world,
-        scaleKnots_[knot],
-        scaleKnots_[knot + 1]);
+    const int64_t midTimestampUs = (prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2;
+    const auto [knot, alpha] = scaleKnotAt(midTimestampUs);
+    const InertialFactorScaleKnots scaledFactor(
+        preintegrationData, alpha, gravityWorld().value.vec, earthRateWorld_, &scaleKnotsActive_);
+    if (!yawKnots_.empty()) {
+      // rigs: prev (A) and next (B)
+      const int yawRigA = findOrDie(yawRigOrder_, prevRigIndex);
+      const int yawRigB = findOrDie(yawRigOrder_, nextRigIndex);
+      const int yawKnot = yawPath_.knotPairFor(yawRigA, yawRigB);
+      XR_CHECK_GE(yawKnot, 0, "Two consecutive rigs more than a yaw-knot interval apart");
+      std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
+          YawDrifted<
+              InertialFactorScaleKnots, 9, 1, 2, 3, 4, //
+              ImuCalibParam, SE3, Vec3, SE3, Vec3, Vec<1>, Vec<1>>(
+              scaledFactor, &yawPath_, yawRigA, yawRigB, yawKnot),
+          H,
+          imuErrorLoss,
+          calibVar,
+          prevPoseVar.T_bodyImu_world,
+          prevPoseVar.vel_world,
+          nextPoseVar.T_bodyImu_world,
+          nextPoseVar.vel_world,
+          scaleKnots_[knot],
+          scaleKnots_[knot + 1],
+          yawKnots_[yawKnot],
+          yawKnots_[yawKnot + 1]);
+    } else {
+      std::tie(factorStorePtr, factorIndex) = opt_.addFactor(
+          InertialFactorScaleKnots(scaledFactor),
+          H,
+          imuErrorLoss,
+          calibVar,
+          prevPoseVar.T_bodyImu_world,
+          prevPoseVar.vel_world,
+          nextPoseVar.T_bodyImu_world,
+          nextPoseVar.vel_world,
+          scaleKnots_[knot],
+          scaleKnots_[knot + 1]);
+    }
   } else if (!gravityKnots_.empty()) {
+    XR_CHECK(yawKnots_.empty(), "Yaw-drift knots need the scale knots (--scale-knot-sec)");
     XR_CHECK_EQ(imuIndex, 0, "Gravity knots are only implemented for the main IMU");
     const auto [knot, alpha] =
         gravityKnotAt((prevPoseVar.timestampUs + nextPoseVar.timestampUs) / 2);

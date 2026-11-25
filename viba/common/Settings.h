@@ -78,6 +78,16 @@ struct InitSettings {
   double skyMinDistOverBaseline = 0.0;
   int skyFromPass = 2;
 
+  // Aria's factory time offsets of gyroscope and accelerometer are instantaneous: the sample
+  // stamped s is the value at s - offset. The pre-integration holds a sample over the interval
+  // that ENDS at its (offset-corrected) stamp, so the offset to use is the factory one minus
+  // half a sample period (what MPS's online calibration reports). On by default; applied to the
+  // factory calibration (prior) and to an online calibration that still equals it.
+  bool imuHalfSample = true;
+  // The accelerometer samples are this much later than the factory offset says (ms; measured
+  // between the two IMUs of a device: glasses A +0.37 on imu-right, glasses B -0.18). 0: off.
+  double accelLaterMs = 0.0;
+
   // Gravity as a function of time: one vector every gravityKnotSec seconds (0: one constant world
   // gravity), an inertial factor uses the linear interpolation at its mid time. Each knot has a
   // prior at the nominal gravity and a random walk to the next knot, with separate standard
@@ -117,6 +127,21 @@ struct InitSettings {
   int scaleKnotIterations = 1;
   int scaleKnotStages = 1;
 
+  // Yaw-drift knots (viba/problem/YawDrift.h): the rate [rad/s] at which the trajectory turns
+  // about the vertical, constant on intervals of at least yawKnotSec seconds (0: none), longer
+  // where needed for no point track to cover more than two intervals. They
+  // over-parametrize the trajectory without changing the problem (the factors see the variables
+  // with the drift applied), stay in for the whole optimization and are put into the trajectory
+  // before every iteration. The prior (std yawKnotRateStd, at 0) only keeps them defined;
+  // yawKnotRateRwStd > 0 adds a random walk between neighbours. They need the scale knots, and
+  // work in open loop only (a landmark seen again much later would join far intervals), with
+  // hosted points, one IMU and a free trajectory (otherwise they are left out).
+  double yawKnotSec = 30.0;
+  double yawKnotRateStd = 1e-2;
+  double yawKnotRateRwStd = 0.0;
+  // > 0: the knots also hold a velocity at which the positions drift (prior std [m/s], at 0)
+  double yawKnotShiftStd = 1.0;
+
   // Parasitic light row time of the Aria SLAM cameras (OV7251: the storage node of a pixel keeps
   // collecting light, with relative sensitivity plsEps, until its row is read, plsT0Ms + row *
   // plsRowUs after the exposure). What row y of an image with exposure te shows is later than the
@@ -125,14 +150,24 @@ struct InitSettings {
   // patches, plsSmearCornerPx for corner tracks: observations of kind 0 in obs_kinds.csv).
   // The observation is taken at frame time + plsScale * D (the rolling-shutter visual factors).
   // Needs the exposure of every image: expo_cam<k>.csv (t_ns, exposure_s, ...) in plsDir (default:
-  // the input folder); without these files the model is off. plsScale = 0: off.
-  double plsScale = 1.0;
-  double plsEps = 1.0 / 65.0;
-  double plsT0Ms = 1.0;
+  // the input folder); without these files the model is off. plsScale = 0: off (the default: the
+  // model fits the images, lower cost, but did not improve the trajectories it was tried on).
+  double plsScale = 0.0;
+  double plsEps = 1.0 / 90.0;
+  double plsT0Ms = 0.35;
   double plsRowUs = 19.0;
   double plsSmearPx = 1.2;
   double plsSmearCornerPx = 5.0;
   std::string plsDir;
+  // How the model's time moves the body: 0: as a rolling shutter (motion from the inertial
+  // samples, velocity and gravity, with the Jacobians on velocity and attitude); 1: the same
+  // motion without those Jacobians (the row-time residuals do not pull on the velocity; the
+  // filter applies the model this way); 2: rotation only.
+  int plsMotion = 0;
+  // Test: instead of the model, every observation is taken plsLinearUsPerRow * (row - 239.5)
+  // microseconds after its frame (a plain row skew about the image centre, any exposure; with
+  // plsScale != 0 and the exposure files present). 0: off.
+  double plsLinearUsPerRow = 0.0;
 };
 
 struct OptimizerSettings {

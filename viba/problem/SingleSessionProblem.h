@@ -14,10 +14,14 @@
 #include <small_thing/Optimizer.h>
 #include <viba/common/Constants.h>
 #include <viba/problem/Types.h>
+#include <viba/problem/YawDrift.h>
 #include <deque>
 #include <optional>
 
 namespace visual_inertial_ba {
+
+// see VisualFactor.cpp (InitSettings::plsMotion)
+void setTimeShiftMotion(int mode);
 
 using small_thing::isNull;
 using small_thing::NullRef;
@@ -305,6 +309,61 @@ class SingleSessionProblem {
   // knots are set back to 1. The calibration is left as it is.
   void scaleKnots_apply(const std::vector<int64_t>& worldPointAnchorRig);
 
+  // Yaw-drift knots (see YawDrift.h): the rate [rad/s] at which the estimated trajectory turns
+  // about the vertical, constant on each of the >= 2 intervals the recording is divided into;
+  // they start at 0, with a prior at 0 (and a random walk between neighbours if randomWalkSqrtH
+  // > 0). The intervals are at least minKnotSec long, and each one is long enough to contain
+  // the end of every point track that starts in the one before it (trackSpansUs: first and last
+  // observation time of every track), so that no track covers more than two intervals.
+  // The positions of the rigs at this moment are the frozen copy the drift is applied along.
+  // To be called once the rigs exist and before the factors: the inertial factors of the main
+  // IMU and the visual factors of points seen from another rig than their host use the knots
+  // while they are active.
+  // shiftSqrtH > 0: the knots also hold a velocity [m/s] at which the positions drift (prior at
+  // 0 with this weight), see YawDrift.h.
+  void yawKnots_init(
+      double minKnotSec,
+      const std::vector<std::pair<int64_t, int64_t>>& trackSpansUs,
+      double priorSqrtH,
+      double randomWalkSqrtH,
+      double shiftSqrtH);
+  // lengths of the knots' intervals [s]
+  std::vector<double> yawKnotIntervalsSec() const;
+  int64_t numYawKnots() const;
+  void yawKnots_setActive(bool active) {
+    yawPath_.active = active;
+  }
+  // the true states (what the factors see): T_bodyImu_world and vel_world of every rig, in time
+  // order; the variables themselves without knots or when they are not active
+  struct TrueRigState {
+    int64_t rigIndex;
+    int64_t timestampUs;
+    SE3 T_bodyImu_world;
+    Vec3 vel_world;
+    double psi; // integral of the rate from the first rig [rad]
+  };
+  std::vector<TrueRigState> yawKnots_trueStates() const;
+  // The drift is put into the variables (they become the true states), the knots are set back
+  // to 0 and the frozen copy of the positions is taken again; the points stay as they are in
+  // their host rigs. The cost changes by the priors of the knots only. Returns the integral of
+  // the rate at the last rig [rad].
+  double yawKnots_apply();
+  // the frozen copy of the positions taken again (the knots have to be 0)
+  void yawKnots_refreeze();
+  // sum of the knot values put into the trajectory by yawKnots_apply since the last call of
+  // this function (for the log)
+  std::vector<Vec<4>> yawKnots_takeApplied();
+  // (test) the knots are set to +-rate [rad/s] and the variables changed so that the true states
+  // stay what they are: the cost has to stay the same
+  void yawKnots_gaugeTest(double rate);
+  int64_t yawKnotTimestampUs(int64_t knotIndex) const;
+  double yawKnot(int64_t knotIndex) const;
+  Vec3 yawKnotShift(int64_t knotIndex) const; // velocity of the shift [m/s]
+  // observations whose two rigs are more than one knot interval apart (plain factors)
+  int64_t yawKnots_numTooLong() const {
+    return yawNumTooLong_;
+  }
+
   // A time added to that of one observation (see addVisualFactor): storage that stays where it
   // is; the value may be changed between optimizer steps.
   double* addObservationTimeShift() {
@@ -522,6 +581,14 @@ class SingleSessionProblem {
   double scaleKnotsSpacingUs_ = 1.0;
   std::pair<int64_t, double> scaleKnotAt(int64_t timestampUs) const;
   bool scaleKnotsActive_ = true;
+
+  // yaw-drift knots (optional), see yawKnots_init
+  std::vector<small_thing::Variable<Vec<4>>> yawKnots_; // rate [rad/s], velocity [m/s]
+  int64_t yawKnotsStartUs_ = 0;
+  YawDriftPath yawPath_; // the factors keep a pointer to it
+  std::unordered_map<int64_t, int> yawRigOrder_; // rig index -> index in yawPath_
+  int64_t yawNumTooLong_ = 0;
+  std::vector<Vec<4>> yawKnotsApplied_;
 
   std::deque<double> obsTimeShiftSec_;
 

@@ -11,6 +11,9 @@
 #include <viba/problem/Histograms.h>
 #include <viba/single_session/SingleSessionAdapter.h>
 
+#include <algorithm>
+#include <limits>
+
 #include <logging/Checks.h>
 #define DEFAULT_LOG_CHANNEL "ViBa::SingleSessionAdapter"
 #include <logging/Log.h>
@@ -95,12 +98,74 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
     initAllParamsWithGtTrajectory(paramInitSettings, trajectory);
   }
 
+  // yaw-drift knots: only where every factor with a pose sees them (see YawDrift.h)
+  const char* noYawKnots = nullptr;
+  if (s.pointParam == "world") {
+    noYawKnots = "points in world coordinates";
+  } else if (numImus_ > 1) {
+    noYawKnots = "more than one IMU";
+  } else if (s.scaleKnotSec <= 0.0) {
+    noYawKnots = "no scale knots (their inertial factor is the one that is wrapped)";
+  } else if (paramInitSettings.poseConstant || paramInitSettings.velConstant) {
+    noYawKnots = "a constant trajectory";
+  }
+  if (s.yawKnotSec > 0.0 && noYawKnots != nullptr && verbosity_ != Muted) {
+    XR_LOGI("Yaw-drift knots: off ({})", noYawKnots);
+  }
+  if (s.yawKnotSec > 0.0 && noYawKnots == nullptr) {
+    // (before the factors: the visual factors of hosted points and the inertial factors use them)
+    std::vector<std::pair<int64_t, int64_t>> trackSpansUs;
+    for (const auto& observations : pointTrackObservations_) {
+      int64_t firstUs = std::numeric_limits<int64_t>::max(), lastUs = 0;
+      for (const auto& obsIndex : observations) {
+        const int64_t t = fData_.trackingObservations[obsIndex].captureTimestampUs;
+        firstUs = std::min(firstUs, t);
+        lastUs = std::max(lastUs, t);
+      }
+      if (!observations.empty()) {
+        trackSpansUs.emplace_back(firstUs, lastUs);
+      }
+    }
+    prob_.yawKnots_init(
+        s.yawKnotSec,
+        trackSpansUs,
+        1.0 / s.yawKnotRateStd,
+        s.yawKnotRateRwStd > 0.0 ? 1.0 / s.yawKnotRateRwStd : 0.0,
+        s.yawKnotShiftStd > 0.0 ? 1.0 / s.yawKnotShiftStd : 0.0);
+  }
+
   addVisualFactors(
       s.trackingObsLossRadius,
       s.trackingObsLossCutoff,
       s.optimizeDetectorBias,
       s.pointParam,
       s.pointFarDist);
+
+  if (prob_.numYawKnots() > 0 && verbosity_ != Muted) {
+    auto lengths = prob_.yawKnotIntervalsSec();
+    std::sort(lengths.begin(), lengths.end());
+    const auto longer = [&](double sec) {
+      return lengths.end() - std::upper_bound(lengths.begin(), lengths.end(), sec);
+    };
+    XR_LOGI(
+        "Yaw-drift knots: {} knots, rate constant on intervals of {:.1f} to {:.1f} s (median "
+        "{:.1f}; at least {} s and long enough for the tracks that start in the interval before); "
+        "intervals longer than 40 / 60 / 120 s: {} / {} / {}; prior std {} rad/s, "
+        "random walk std {} rad/s, shift velocity std {} m/s (0: no shift); {} observations more "
+        "than one interval from their host rig (plain factors)",
+        prob_.numYawKnots(),
+        lengths.front(),
+        lengths.back(),
+        lengths[lengths.size() / 2],
+        s.yawKnotSec,
+        longer(40.0),
+        longer(60.0),
+        longer(120.0),
+        s.yawKnotRateStd,
+        s.yawKnotRateRwStd,
+        s.yawKnotShiftStd,
+        prob_.yawKnots_numTooLong());
+  }
 
   if (s.gravityScale != 1.0) {
     auto& gravity = prob_.gravityWorld().value;
@@ -160,7 +225,6 @@ void SingleSessionAdapter::initAllVariablesAndFactors(
           s.scaleKnotRwStd);
     }
   }
-
   // required prior to adding inertial factors and omega priors
   regenerateAllPreintegrationsFromImuMeasurements();
 

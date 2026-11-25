@@ -1200,6 +1200,9 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 
   try {
     app.parse(argc, argv);
+    // (the yaw-drift knots need the loop of main_AriaKit_ViBa.cpp, which puts them into the
+    // trajectory)
+    initSettings.yawKnotSec = 0.0;
   } catch (const CLI::ParseError& e) {
     std::cerr << "Command line parse error: " << e.what() << std::endl;
   }

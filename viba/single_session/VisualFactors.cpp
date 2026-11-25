@@ -181,6 +181,42 @@ void SingleSessionAdapter::applyScaleKnots() {
   }
 }
 
+void SingleSessionAdapter::applyYawKnots() {
+  if (prob_.numYawKnots() == 0) {
+    return;
+  }
+  prob_.yawKnots_apply();
+  // what went into the trajectory since the last report (the knots may have been put in after
+  // every iteration: the sums of their values; the intervals' lengths for the total turning)
+  const auto applied = prob_.yawKnots_takeApplied();
+  const auto lengths = prob_.yawKnotIntervalsSec();
+  const double kDegPerMin = 60.0 * 180.0 / M_PI;
+  double lo = applied[0][0], hi = lo, total = 0.0, maxShift = 0.0;
+  std::string rates, shifts;
+  for (size_t i = 0; i < applied.size(); i++) {
+    lo = std::min(lo, applied[i][0]);
+    hi = std::max(hi, applied[i][0]);
+    total += applied[i][0] * lengths[i];
+    rates += fmt::format(" {:+.4f}", applied[i][0] * kDegPerMin);
+    const Vec3 u = 1e3 * applied[i].tail<3>();
+    maxShift = std::max(maxShift, u.norm());
+    shifts += fmt::format(" ({:+.3f} {:+.3f} {:+.3f})", u[0], u[1], u[2]);
+  }
+  if (verbosity_ != Muted) {
+    XR_LOGI(
+        "Yaw-drift knots: {} knots, rate from {:+.4f} to {:+.4f} deg/min, {:+.4f} deg over the "
+        "recording; put into the trajectory. Rates [deg/min]:{}. Shift velocities up to {:.3f} "
+        "mm/s [mm/s]:{}",
+        prob_.numYawKnots(),
+        lo * kDegPerMin,
+        hi * kDegPerMin,
+        total * 180.0 / M_PI,
+        rates,
+        maxShift,
+        shifts);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Parasitic light row time (InitSettings::plsScale)
 
@@ -250,12 +286,14 @@ void SingleSessionAdapter::plsInit(const InitSettings& s) {
     }
   }
   plsOn_ = true;
+  setTimeShiftMotion(s.plsMotion);
   plsScale_ = s.plsScale;
   plsEps_ = s.plsEps;
   plsT0Sec_ = s.plsT0Ms * 1e-3;
   plsRowSec_ = s.plsRowUs * 1e-6;
   plsSmearPx_[0] = s.plsSmearCornerPx;
   plsSmearPx_[1] = s.plsSmearPx;
+  plsLinearSecPerRow_ = s.plsLinearUsPerRow * 1e-6;
 
   // kinds of the observations: one line per observation, `frame, id, camera, kind`
   plsKinds_.clear();
@@ -387,6 +425,10 @@ void SingleSessionAdapter::plsUpdate() {
       att = smearAttenuation(speed * wRow / ell, plsEps_ * wRow / te);
     }
     time *= att;
+    if (plsLinearSecPerRow_ != 0.0) { // test: a plain row skew
+      time = plsLinearSecPerRow_ * (row - 239.5);
+      att = 1.0;
+    }
     *o.shiftSec = plsScale_ * time;
 
     sumTime += time;

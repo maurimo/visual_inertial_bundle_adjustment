@@ -8,6 +8,7 @@
 // @lint-ignore-every CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
 #include <baspacho/baspacho/Solver.h>
 #include <small_thing/Optimizer.h>
+#include <cstdlib>
 #include <iomanip>
 
 namespace small_thing {
@@ -281,7 +282,8 @@ Optimizer::factorSolveFunctions(
           pcgStats->nMatVec++;
           pcgStats->totMatVecTime += std::chrono::duration<double>(Clock::now() - start).count();
         },
-        settings.pcgDesiredResidual,
+        std::getenv("VIBA_PCG_RESIDUAL") ? std::atof(std::getenv("VIBA_PCG_RESIDUAL"))
+                                         : settings.pcgDesiredResidual,
         settings.pcgMaxIterations,
         /* verbose = */ false);
 
@@ -796,6 +798,22 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
 
   dispenso::ThreadPool threadPool{settings.numThreads > 1 ? settings.numThreads : 0};
 
+  // experiments on the speed of convergence (environment, all off by default):
+  //   VIBA_STEP_DIAG=1    per iteration: share of the damping in the step, per variable type
+  //   VIBA_STEP_EXTEND=a  after a good step, try the step times min(a, minimum of the parabola
+  //                       through the cost before, its slope along the step and the cost after)
+  const bool stepDiag = std::getenv("VIBA_STEP_DIAG") != nullptr;
+  const double stepExtendMax =
+      std::getenv("VIBA_STEP_EXTEND") ? std::atof(std::getenv("VIBA_STEP_EXTEND")) : 0.0;
+  //   VIBA_DAMPING_GOOD=f the damping is multiplied by f after a good step (instead of the setting)
+  const double dampingAdjustOnGoodStep = std::getenv("VIBA_DAMPING_GOOD")
+      ? std::atof(std::getenv("VIBA_DAMPING_GOOD"))
+      : settings.dampingAdjustOnGoodStep;
+  Eigen::VectorXd diagUndamped;
+  if (stepDiag) {
+    diagUndamped.resize(solver->order());
+  }
+
   // iteration loop
   while (true) {
     TimePoint start_it = Clock::now();
@@ -823,6 +841,12 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
     double modelCostReduction;
     std::string solverReport;
     do {
+      if (stepDiag) {
+        for (int64_t i = 0; i < (int64_t)paramSizes.size(); i++) {
+          diagUndamped.segment(accessor.paramStart(i), paramSizes[i]) =
+              accessor.diagBlock(hess.data(), i).diagonal();
+        }
+      }
       addDamping(hess, accessor, damping);
 
       step = grad;
@@ -857,6 +881,38 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
     step *= -1.0;
     double gradNorm = grad.norm();
     double stepNorm = step.norm();
+
+    std::string extReport;
+    if (stepDiag) {
+      // step' (H + D) step = -grad' step =: a; D = damping * (diag(H) + 1). The quadratic model
+      // without the damping has its minimum along the step at a / (a - step' D step).
+      std::stringstream ss;
+      const double a = 2.0 * modelCostReduction;
+      double dRelTot = 0.0, dAbsTot = 0.0;
+      ss << "    EXT: by type (|s|^2, share of a, damping share rel/abs):";
+      for (const auto& [_, vStore] : variableStores.stores) {
+        double s2 = 0.0, gs = 0.0, dRel = 0.0;
+        int64_t n = 0;
+        vStore->forEachRegistered([&](int64_t index, int64_t dim) {
+          const int64_t start = accessor.paramStart(index);
+          const auto s = step.segment(start, dim);
+          s2 += s.squaredNorm();
+          gs -= s.dot(grad.segment(start, dim));
+          dRel += damping * (s.array().square() * diagUndamped.segment(start, dim).array()).sum();
+          n++;
+        });
+        if (n > 0) {
+          ss << " [" << vStore->typeName() << " x" << n << ": " << s2 << ", " << gs / a << ", "
+             << dRel / a << "/" << damping * s2 / a << "]";
+        }
+        dRelTot += dRel;
+        dAbsTot += damping * s2;
+      }
+      ss << "\n    EXT: damping share of the step: relative part " << dRelTot / a
+         << ", absolute part " << dAbsTot / a << ", model minimum along the step at "
+         << a / std::max(a - dRelTot - dAbsTot, 1e-300 * a) << "\n";
+      extReport = ss.str();
+    }
 
     // hook for inspection of most non-linear factors
     if (iterationNum + 1 == settings.triggerDebuggingOfNonlinearities) {
@@ -1010,12 +1066,50 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
       }
     }
 
+    // step extension: when the cost fell by more than the damped model said, the step was short
+    if (stepExtendMax > 1.0 && appliedStepFactor == 1.0 && newCost < prevCost &&
+        failureRateIsAcceptable) {
+      // parabola through the cost at 0 (slope -2 m) and at 1: minimum at m / (2 (m - reduction))
+      const double curv = 2.0 * (modelCostReduction - costReduction) + 2.0 * modelCostReduction;
+      double factor = curv > 0 ? 2.0 * modelCostReduction / curv : stepExtendMax;
+      factor = std::min(factor, stepExtendMax);
+      if (factor > 1.1) {
+        Eigen::VectorXd longStep = step * factor;
+        restoreVariables(variablesBackup);
+        auto [rInf, r2, r1] = applyStep(longStep, accessor);
+        CostStats statsExt;
+        const double costExt = computeCost(
+            true, &statsExt, settings.numThreads > 1 ? &threadPool : nullptr);
+        std::stringstream ss;
+        ss << "    EXT: step times " << factor << ": cost " << costExt << " against " << newCost;
+        if (costExt < newCost && newFailureRateIsAcceptable(statsExt)) {
+          ss << ", taken\n";
+          newCost = costExt;
+          stats = statsExt;
+          costReduction = prevCost - newCost;
+          ratioReductionToCost = costReduction / newCost;
+          ratioS2VnInf = rInf;
+          ratioS2Vn2 = r2;
+          ratioS2Vn1 = r1;
+        } else {
+          ss << ", refused\n";
+          restoreVariables(variablesBackup);
+          applyStep(step, accessor);
+        }
+        extReport += ss.str();
+      }
+    }
+
     const char* smiley;
     const char* toleranceHit = //
         ratioReductionToCost < settings.relativeCostTolerance ? "relative cost"
         : costReduction < settings.absoluteCostTolerance      ? "absolute cost"
         : ratioS2Vn2 < settings.variablesTolerance            ? "variable"
                                                               : nullptr;
+    if (toleranceHit == nullptr && settings.userConvergedCallback && newCost <= prevCost &&
+        failureRateIsAcceptable && settings.userConvergedCallback(iterationNum)) {
+      toleranceHit = "user";
+    }
     if (settings.stopOnlyAtDampingFloor && damping > settings.dampingMin * (1.0 + 1e-7)) {
       toleranceHit = nullptr;
     }
@@ -1046,7 +1140,7 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
       if (ratioReductionToExpected >= settings.minRelativeCostReduction &&
           appliedStepFactor > settings.minStepFactorForGood) {
         smiley = toleranceHit ? ";-|" : ":-)";
-        damping *= settings.dampingAdjustOnGoodStep;
+        damping *= dampingAdjustOnGoodStep;
         damping = std::max(damping, settings.dampingMin);
       } else {
         smiley = ":-/";
@@ -1068,6 +1162,7 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
          << "     n." << iterationNum << "; g/H: " << timeString(end_costs - start_it)
          << ", solver:\n"
          << indent(solverReport) << "\n"
+         << extReport //
          << "     lmbd: " << damping << ", relRed: " << percentageString(ratioReductionToExpected)
          << ", improv: " << costReduction << ", modelImprov: " << modelCostReduction << "\n"
          << "    |G|: " << gradNorm << ", |S|: " << stepNorm << ", |s/v|_inf: " << ratioS2VnInf

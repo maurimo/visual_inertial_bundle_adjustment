@@ -205,6 +205,17 @@ void InitSettings::addCommandLine(CLI::App& app) {
          "Elevation above the horizon [deg] from which a far track counts as sky (default: 5)")
       ->group("Sky points");
   app.add_option(
+         "--imu-half-sample",
+         imuHalfSample,
+         "Factory IMU time offsets are instantaneous sample times: use them minus half a sample "
+         "period, as the pre-integration holds a sample over the interval ending at it "
+         "(default: 1)");
+  app.add_option(
+         "--accel-later-ms",
+         accelLaterMs,
+         "The accelerometer samples are this much later than the factory time offset says "
+         "(default: 0)");
+  app.add_option(
          "--sky-from-pass", skyFromPass, "First pass that leaves out sky points (default: 2)")
       ->group("Sky points");
 
@@ -264,17 +275,44 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_option(
          "--scale-knot-stages", scaleKnotStages, "Number of scale-knot stages (default: 1)")
       ->group("Gravity");
+  app.add_option(
+         "--yaw-knot-sec",
+         yawKnotSec,
+         "Yaw-drift knots: rate of turning of the trajectory about the vertical, constant on "
+         "intervals of at least this many seconds (longer where the point tracks need it: no "
+         "track covers more than two intervals); an over-parametrization of the trajectory, in "
+         "the inertial factors and in the visual factors of hosted points for the whole "
+         "optimization; open loop only (default: 30; 0: off)")
+      ->group("Gravity");
+  app.add_option(
+         "--yaw-knot-rate-std",
+         yawKnotRateStd,
+         "Prior std of a yaw-drift knot [rad/s] (default: 1e-2)")
+      ->group("Gravity");
+  app.add_option(
+         "--yaw-knot-rate-rw-std",
+         yawKnotRateRwStd,
+         "Random walk std between two yaw-drift knots [rad/s] (default: 0, none)")
+      ->group("Gravity");
+  app.add_option(
+         "--yaw-knot-shift-std",
+         yawKnotShiftStd,
+         "> 0: the yaw-drift knots also hold a velocity [m/s] at which the positions drift, with "
+         "this prior std (default: 1; 0: no shift)")
+      ->group("Gravity");
 
   app.add_option(
          "--pls-scale",
          plsScale,
-         "Parasitic light row time of the Aria SLAM cameras: scale of the model's time (default: "
-         "1; 0: off; needs expo_cam<k>.csv)")
+         "Parasitic light row time of the Aria SLAM cameras: scale of the model's time (1: the "
+         "model; default: 0, off; needs expo_cam<k>.csv)")
       ->group("Parasitic light");
-  app.add_option("--pls-eps", plsEps, "Parasitic light sensitivity (default: 1/65)")
+  app.add_option("--pls-eps", plsEps, "Parasitic light sensitivity (default: 1/90)")
       ->group("Parasitic light");
   app.add_option(
-         "--pls-t0-ms", plsT0Ms, "Time from the end of the exposure to the first row (default: 1)")
+         "--pls-t0-ms",
+         plsT0Ms,
+         "Time from the end of the exposure to the first row (default: 0.35)")
       ->group("Parasitic light");
   app.add_option("--pls-row-us", plsRowUs, "Row time of the readout (default: 19)")
       ->group("Parasitic light");
@@ -287,6 +325,18 @@ void InitSettings::addCommandLine(CLI::App& app) {
          "--pls-smear-corner-px",
          plsSmearCornerPx,
          "Correlation length of corner tracks [pixels] (default: 5; 0: no attenuation)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-motion",
+         plsMotion,
+         "Motion of the body over the model's time: 0 full with Jacobians, 1 without the "
+         "Jacobians on velocity and attitude, 2 rotation only (default: 0)")
+      ->group("Parasitic light");
+  app.add_option(
+         "--pls-linear-us-per-row",
+         plsLinearUsPerRow,
+         "Test: a plain row skew of this many microseconds per row about the image centre instead "
+         "of the model (default: 0, off)")
       ->group("Parasitic light");
   app.add_option(
          "--pls-dir",
@@ -310,9 +360,10 @@ static std::unordered_map<std::string, std::optional<Optimizer::SolverType>> arg
     {"direct", Optimizer::Solver_Direct},
     {"gauss-seidel", Optimizer::Solver_PCG_GaussSeidel},
     {"jacobi", Optimizer::Solver_PCG_Jacobi},
+    {"lower-prec", Optimizer::Solver_PCG_LowerPrecSolve},
     {"auto", {}},
 };
-static const char* solverArgs = "auto|direct|gauss-seidel|jacobi";
+static const char* solverArgs = "auto|direct|gauss-seidel|jacobi|lower-prec";
 
 void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, bool skipAdvanced) {
   app.add_option(
