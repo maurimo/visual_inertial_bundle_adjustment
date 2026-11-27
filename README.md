@@ -257,6 +257,9 @@ pip install --user pre-commit
 
 ## Description of the model
 
+The design of the optimizer (damping, points in a host rig, scale and drift knots, elimination order), of the loop
+closure and of the Aria sensor-model additions is described in the [design notes](docs/README.md).
+
 The whole calibration state for all sensors (all intrinsics and extrinsics) is optimized, and all recording frames
 are used with all visual observations.
 
