@@ -13,6 +13,7 @@
 #include <rolling_shutters/RollingShutterData.h>
 #include <small_thing/Optimizer.h>
 #include <viba/common/Constants.h>
+#include <viba/problem/LoopBundle.h>
 #include <viba/problem/Types.h>
 #include <viba/problem/YawDrift.h>
 #include <deque>
@@ -364,6 +365,31 @@ class SingleSessionProblem {
     return yawNumTooLong_;
   }
 
+  // Loop-closing points (LoopBundle.h, LC_IMPL.md): one point variable per loop landmark, in its
+  // own container (adding to pointTracks_ after factors exist would move the point variables),
+  // expressed in a host rig; observations from any rig, minutes apart, in the matrix-free store.
+  // visitGroup: the visit of the observation; pairGroup: its loop pair (GNC weight).
+  int64_t loopPoint_addNew(const Vec3& worldPt, int64_t hostRigIndex, bool inverseDepth);
+  Vec3 loopPoint_world(int64_t loopPoint) const;
+  int64_t numLoopPoints() const {
+    return loopPoints_.size();
+  }
+  void addLoopObservation(
+      int64_t rigIndex,
+      int64_t cameraIndex,
+      int64_t loopPoint,
+      const Vec2& projBaseRes,
+      const Mat22& sqrtH_BaseRes,
+      int visitGroup,
+      int pairGroup);
+  // the virtual points (one per loop point and visit group observed from 2 rigs at least) and
+  // their preconditioner-only factors; after all loop observations, before registerPointVariables.
+  // Returns their number.
+  int64_t loopVirtual_build();
+  // the virtual points set from their loop points (before every linearization, knots folded)
+  void loopVirtual_sync();
+  LoopObservationStore* loopStore();
+
   // A time added to that of one observation (see addVisualFactor): storage that stays where it
   // is; the value may be changed between optimizer steps.
   double* addObservationTimeShift() {
@@ -591,6 +617,26 @@ class SingleSessionProblem {
   std::vector<Vec<4>> yawKnotsApplied_;
 
   std::deque<double> obsTimeShiftSec_;
+
+  // loop-closing points (see loopPoint_addNew)
+  std::deque<PointVariable> loopPoints_;
+  std::vector<PointHost> loopPointHosts_;
+  struct LoopObsRecord {
+    int64_t rigIndex, cameraIndex, timestampUs;
+    Vec2 px;
+    Mat22 sqrtH;
+    int visitGroup, pairGroup;
+  };
+  std::vector<std::vector<LoopObsRecord>> loopObsRecords_; // per loop point
+  std::deque<PointVariable> loopVirtualPoints_;
+  struct LoopVirtual {
+    int64_t loopPoint;
+    PointHost host;
+  };
+  std::vector<LoopVirtual> loopVirtualInfo_;
+  LoopObservationStore* loopStore_ = nullptr;
+  // a point given in world coordinates, as the variable of a point in a host rig
+  Vec3 hostParamOf(const PointHost& host, const Vec3& worldPt) const;
 
   // rigIndex (in recording's frame list) -> variable
   // (note that only a subset of the rigs in the recording might be loaded)

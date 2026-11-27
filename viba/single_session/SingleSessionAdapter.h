@@ -181,6 +181,9 @@ class SingleSessionAdapter {
   // the same for the yaw-drift knots (InitSettings::yawKnotSec)
   void applyYawKnots();
 
+  // first and last observation time [us] of every point track that has observations
+  std::vector<std::pair<int64_t, int64_t>> trackSpansUs() const;
+
  private:
   using RigSensorToIndex = std::unordered_map<RigSensorIndices, int64_t, pair_hash>;
 

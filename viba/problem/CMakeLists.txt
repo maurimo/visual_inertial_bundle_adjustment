@@ -5,12 +5,15 @@
 # problem, built with ark interface
 add_library(ark_problem
     Histograms.h
+    LoopBundle.h
     PointRefinement.h
     SingleSessionProblem.h
     Types.h
     VisualFactorRelative.h
     Histograms.cpp
     InertialFactor.cpp
+    LoopBundle.cpp
+    LoopProblem.cpp
     OmegaPriorFactor.cpp
     PointRefinement.cpp
     PriorFactor.cpp

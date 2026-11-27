@@ -1,3 +1,7 @@
 add_executable(TestVisualFactorRelative TestVisualFactorRelative.cpp)
 target_link_libraries(TestVisualFactorRelative ark_problem gtest_main)
 gtest_discover_tests(TestVisualFactorRelative)
+
+add_executable(TestLoopBundle TestLoopBundle.cpp)
+target_link_libraries(TestLoopBundle ark_problem gtest_main)
+gtest_discover_tests(TestLoopBundle)

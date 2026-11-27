@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -215,6 +216,22 @@ void SingleSessionAdapter::applyYawKnots() {
         maxShift,
         shifts);
   }
+}
+
+std::vector<std::pair<int64_t, int64_t>> SingleSessionAdapter::trackSpansUs() const {
+  std::vector<std::pair<int64_t, int64_t>> out;
+  for (const auto& observations : pointTrackObservations_) {
+    int64_t firstUs = std::numeric_limits<int64_t>::max(), lastUs = 0;
+    for (const auto& obsIndex : observations) {
+      const int64_t t = fData_.trackingObservations[obsIndex].captureTimestampUs;
+      firstUs = std::min(firstUs, t);
+      lastUs = std::max(lastUs, t);
+    }
+    if (!observations.empty()) {
+      out.emplace_back(firstUs, lastUs);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------

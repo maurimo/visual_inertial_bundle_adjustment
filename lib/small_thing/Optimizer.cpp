@@ -64,8 +64,18 @@ double Optimizer::computeGradHess(
     dispenso::ThreadPool* threadPool) const {
   double retv = 0.0;
   for (auto& [_, fStore] : factorStores.stores) {
-    retv += fStore->computeGradHess(
-        gradData, acc, hessData, updateCachedResults, dontRetryFailed, threadPool);
+    const int role = fStore->role();
+    if (role == FactorStoreBase::kRoleMatrixFree) {
+      retv += fStore->computeGradHess(
+          gradData, acc, nullptr, updateCachedResults, dontRetryFailed, threadPool);
+    } else if (role == FactorStoreBase::kRolePreconditionerOnly) {
+      if (hessData) {
+        fStore->computeGradHess(nullptr, acc, hessData, false, dontRetryFailed, threadPool);
+      }
+    } else {
+      retv += fStore->computeGradHess(
+          gradData, acc, hessData, updateCachedResults, dontRetryFailed, threadPool);
+    }
   }
 
   return retv;
@@ -92,6 +102,10 @@ double Optimizer::computeCost(
     dispenso::ThreadPool* threadPool) const {
   double retv = 0.0;
   for (const auto& [_, fStore] : factorStores.stores) {
+    if (fStore->role() == FactorStoreBase::kRolePreconditionerOnly) {
+      continue;
+    }
+    // (as before: each store sets *stats)
     retv += fStore->computeCost(makeComparableWithStored, stats, threadPool);
   }
   return retv;
@@ -158,6 +172,8 @@ std::string Optimizer::solverToString(SolverType solverType) {
       return "gauss-seidel";
     case Solver_PCG_LowerPrecSolve:
       return "lower-prec-solve";
+    case Solver_PCG_MatrixFree:
+      return "factor-matrix-free";
     default:
       return "<unknown>";
   }
@@ -174,7 +190,9 @@ BaSpaCho::SolverPtr Optimizer::initSolver(
   // collect variable sizes and (lower) off-diagonal blocks that need to be set
   std::unordered_set<std::pair<int64_t, int64_t>, pair_hash> blockSet;
   for (const auto& [_, fStore] : factorStores.stores) {
-    fStore->registerBlocks(blockSet);
+    if (fStore->role() != FactorStoreBase::kRoleMatrixFree) {
+      fStore->registerBlocks(blockSet);
+    }
   }
   std::vector<std::pair<int64_t, int64_t>> blocks(blockSet.begin(), blockSet.end());
   std::sort(blocks.begin(), blocks.end());
@@ -216,6 +234,91 @@ Optimizer::factorSolveFunctions(
     Eigen::VectorXd& hess,
     const Settings& settings,
     int iterativeStart) {
+  if (settings.solverType == Solver_PCG_MatrixFree) {
+    // The banded matrix M is factorized completely (points, then the reduced corner): the
+    // preconditioner is that factor, and the product with M_red is L (L^T v) on the corner, so no
+    // copy of the reduced matrix is kept. The matrix-free term adds H_red - M_red.
+    BASPACHO_CHECK(settings.matrixFree != nullptr);
+    MatrixFreeTerm* mf = settings.matrixFree;
+    const int64_t order = solver.order();
+    const int64_t secStart = solver.spanVectorOffset(iterativeStart);
+    const int64_t secSize = order - secStart;
+    struct Stats {
+      int nPrecond = 0, nMatVec = 0;
+      double precondTime = 0.0, matVecTime = 0.0;
+    };
+    auto stats = std::make_shared<Stats>();
+    // threads of the product L (L^T v)
+    auto pool = settings.numThreads > 1
+        ? std::make_shared<dispenso::ThreadPool>(settings.numThreads)
+        : std::shared_ptr<dispenso::ThreadPool>();
+    const double fixedResidual = std::getenv("VIBA_PCG_RESIDUAL")
+        ? std::atof(std::getenv("VIBA_PCG_RESIDUAL"))
+        : settings.pcgDesiredResidual;
+    auto pcg = std::make_shared<PCG>(
+        [=, &solver, &hess](Eigen::VectorXd& u, const Eigen::VectorXd& v) {
+          TimePoint start = Clock::now();
+          u = v;
+          solver.solveLFrom(hess.data(), iterativeStart, u.data() - secStart, secSize, 1);
+          solver.solveLtFrom(hess.data(), iterativeStart, u.data() - secStart, secSize, 1);
+          stats->nPrecond++;
+          stats->precondTime += std::chrono::duration<double>(Clock::now() - start).count();
+        },
+        [=, &solver, &hess](Eigen::VectorXd& u, const Eigen::VectorXd& v) {
+          TimePoint start = Clock::now();
+          u.setZero(v.size());
+          addFactorProductFrom(
+              solver,
+              hess.data(),
+              iterativeStart,
+              v.data() - secStart,
+              u.data() - secStart,
+              pool.get());
+          mf->addMatvec(v.data() - secStart, u.data() - secStart);
+          stats->nMatVec++;
+          stats->matVecTime += std::chrono::duration<double>(Clock::now() - start).count();
+        },
+        fixedResidual,
+        settings.pcgMaxIterations,
+        /* verbose = */ false);
+    return {
+        [=, &solver, &hess]() -> std::string {
+          TimePoint start = Clock::now();
+          solver.factorUpTo(hess.data(), iterativeStart);
+          TimePoint mid = Clock::now();
+          solver.factorFrom(hess.data(), iterativeStart);
+          TimePoint end = Clock::now();
+          return "factor + matrix-free PCG, factor[elims]: " + timeString(mid - start) +
+              ", factor[reduced]: " + timeString(end - mid);
+        },
+        [=, &solver, &hess](Eigen::VectorXd& vec) -> std::string {
+          TimePoint start = Clock::now();
+          mf->prepareRhs(vec.data());
+          solver.solveLUpTo(hess.data(), iterativeStart, vec.data(), order, 1);
+          mf->correctReducedRhs(vec.data());
+          TimePoint endElim = Clock::now();
+          *stats = Stats();
+          pcg->desiredRelativeResidual =
+              settings.pcgAdaptive && pcgEta_ > 0.0 ? pcgEta_ : fixedResidual;
+          Eigen::VectorXd x;
+          auto [its, res] = pcg->solve(x, vec.segment(secStart, secSize));
+          vec.segment(secStart, secSize) = x;
+          TimePoint endPcg = Clock::now();
+          solver.solveLtUpTo(hess.data(), iterativeStart, vec.data(), order, 1);
+          mf->backSubstitute(vec.data());
+          TimePoint end = Clock::now();
+          std::stringstream ss;
+          ss << "\nsolve[elims]: " << timeString(endElim - start)
+             << ", reduced-PCG: " << timeString(endPcg - endElim)
+             << ", backsubst: " << timeString(end - endPcg) << "\n(precond: " << stats->nPrecond
+             << "x" << microsecondsString(stats->precondTime * 1e6 / std::max(stats->nPrecond, 1))
+             << ", matvec: " << stats->nMatVec << "x"
+             << microsecondsString(stats->matVecTime * 1e6 / std::max(stats->nMatVec, 1))
+             << ", iters: " << its << ", residual: " << res
+             << ", target: " << pcg->desiredRelativeResidual << ")";
+          return ss.str();
+        }};
+  }
   if (settings.solverType == Solver_Direct) {
     return {
         [&]() -> std::string {
@@ -701,6 +804,32 @@ Optimizer::Summary Optimizer::optimize() {
   return optimize({});
 }
 
+Optimizer::LinearSolve
+Optimizer::linearSolveForTest(const Settings& settings, double damping, bool densify) {
+  const bool full = settings.solverType == Solver_Direct ||
+      settings.solverType == Solver_PCG_LowerPrecSolve ||
+      settings.solverType == Solver_PCG_MatrixFree;
+  BaSpaCho::SolverPtr solver = initSolver(settings.numThreads, full);
+  const auto& accessor = solver->accessor();
+  LinearSolve out;
+  out.grad.setZero(solver->order());
+  Eigen::VectorXd hess = Eigen::VectorXd::Zero(solver->dataSize());
+  computeGradHess(out.grad.data(), accessor, hess.data(), false, false, nullptr);
+  addDamping(hess, accessor, damping);
+  if (densify) {
+    solver->skel().densify(out.dense, hess.data(), /* fillUpperHalf = */ true, 0);
+  }
+  if (settings.solverType == Solver_PCG_MatrixFree) {
+    settings.matrixFree->linearize(accessor, damping);
+  }
+  auto [factorFunc, solveFunc] =
+      factorSolveFunctions(*solver, hess, settings, elimRanges.empty() ? 0 : elimRanges.back());
+  out.step = out.grad;
+  out.report = factorFunc();
+  out.report += solveFunc(out.step);
+  return out;
+}
+
 struct Optimizer::ExpectedValues {
   std::unordered_map<FactorStoreBase*, std::vector<std::tuple<double, double, double>>> s2xv;
   std::vector<std::pair<FactorStoreBase*, int>> debugFactors;
@@ -771,7 +900,8 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
   // create sparse linear solver
   BaSpaCho::SolverPtr solver = initSolver(
       settings.numThreads,
-      (settings.solverType == Solver_Direct || settings.solverType == Solver_PCG_LowerPrecSolve));
+      (settings.solverType == Solver_Direct || settings.solverType == Solver_PCG_LowerPrecSolve ||
+       settings.solverType == Solver_PCG_MatrixFree));
   const auto& accessor = solver->accessor();
 
   // linear system data
@@ -789,6 +919,8 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
   double damping = settings.damping;
 
   int iterationNum = 0;
+  double ewPrevGradNorm = -1.0; // (Settings::pcgAdaptive)
+  pcgEta_ = -1.0;
   int lastImprovementIteration = 0; // last iteration we had a significant improvement
   int lastTroubledIteration = -10;
   double initialCost = 0.0, finalCost;
@@ -837,6 +969,19 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
     if (iterationNum == 0) {
       initialCost = prevCost;
     }
+    if (settings.solverType == Solver_PCG_MatrixFree && settings.pcgAdaptive) {
+      const double gNorm = grad.norm();
+      double eta = settings.pcgEtaMax;
+      if (ewPrevGradNorm > 0.0) {
+        eta = settings.pcgEwGamma * std::pow(gNorm / ewPrevGradNorm, settings.pcgEwAlpha);
+        const double safeguard = settings.pcgEwGamma * std::pow(pcgEta_, settings.pcgEwAlpha);
+        if (safeguard > 0.1) {
+          eta = std::max(eta, safeguard);
+        }
+      }
+      pcgEta_ = std::min(std::max(eta, settings.pcgEtaMin), settings.pcgEtaMax);
+      ewPrevGradNorm = gNorm;
+    }
 
     double modelCostReduction;
     std::string solverReport;
@@ -848,6 +993,9 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
         }
       }
       addDamping(hess, accessor, damping);
+      if (settings.solverType == Solver_PCG_MatrixFree) {
+        settings.matrixFree->linearize(accessor, damping);
+      }
 
       step = grad;
       solverReport = factorFunc();

@@ -9,6 +9,7 @@
 
 #include <small_thing/CondensedFactor.h>
 #include <small_thing/Factor.h>
+#include <small_thing/MatrixFree.h>
 #include <small_thing/PCG.h>
 #include <small_thing/Preconditioner.h>
 #include <iostream>
@@ -34,6 +35,9 @@ class Optimizer {
     Solver_PCG_Jacobi,
     Solver_PCG_GaussSeidel,
     Solver_PCG_LowerPrecSolve,
+    // PCG on the reduced system, preconditioned by the double-precision factor of the banded
+    // matrix, with the matrix-free term of Settings::matrixFree (see MatrixFree.h)
+    Solver_PCG_MatrixFree,
   };
 
   // settings for optimize function
@@ -97,7 +101,28 @@ class Optimizer {
     // called after every accepted step; returning true counts as a tolerance hit ("user"), with
     // the same rules as the cost tolerances (damping floor, consecutive iterations)
     std::function<bool(int)> userConvergedCallback;
+
+    // Solver_PCG_MatrixFree: the part of the Hessian kept out of the factorized matrix (not owned)
+    MatrixFreeTerm* matrixFree = nullptr;
+    // Solver_PCG_MatrixFree: inexact Newton steps, the PCG's relative residual chosen per iteration
+    // (Eisenstat and Walker 1996, choice 2): eta_k = gamma (|g_k| / |g_k-1|)^alpha, safeguarded by
+    // gamma eta_k-1^alpha when that is above 0.1, within [pcgEtaMin, pcgEtaMax]; eta_0 = pcgEtaMax.
+    // pcgMaxIterations stays the cap. Off: pcgDesiredResidual.
+    bool pcgAdaptive = false;
+    double pcgEtaMin = 1e-6;
+    double pcgEtaMax = 0.1;
+    double pcgEwGamma = 0.9;
+    double pcgEwAlpha = 2.0;
   };
+
+  // (tests) one linearization and one solve at the current values, without moving them: the
+  // gradient and the solution x of (H + damping) x = gradient, in the solver's vector order
+  struct LinearSolve {
+    Eigen::VectorXd grad, step;
+    Eigen::MatrixXd dense; // (densify) the damped factorized matrix before factorization
+    std::string report;
+  };
+  LinearSolve linearSolveForTest(const Settings& settings, double damping, bool densify = false);
 
   struct Summary {
     double initialCost;
@@ -339,6 +364,8 @@ class Optimizer {
   Summary optimize(const Settings& settings);
 
   TypedStore<FactorStoreBase> factorStores;
+  // relative residual of the next PCG solve (Settings::pcgAdaptive; < 0: the fixed one)
+  double pcgEta_ = -1.0;
   TypedStore<VariableStoreBase> variableStores;
   std::vector<int64_t> paramSizes;
   std::vector<int64_t> elimRanges;

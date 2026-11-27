@@ -2,6 +2,7 @@
 
 add_library(small_thing
   PCG.cpp
+  MatrixFree.cpp
   Optimizer.cpp
   Print.cpp
   AtomicOps.h           
@@ -12,6 +13,7 @@ add_library(small_thing
   Variable.h
   Common.h                
   Factor.h                
+  MatrixFree.h
   PCG.h                   
   Print.h                 
   SoftLoss.h)

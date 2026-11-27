@@ -40,7 +40,7 @@ class PCG {
 
   TransFunc applyInvM;
   TransFunc applyA;
-  const double desiredRelativeResidual;
+  double desiredRelativeResidual; // (may be changed between solves)
   const int maxIterations;
   const bool trace;
 

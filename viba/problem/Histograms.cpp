@@ -65,6 +65,9 @@ void Histograms::show() const {
   // the same type. Our costs are lambdas, and they contain the enclosing function in their
   // prettified type name, so we search string bits to get the relevant bucket of cost terms.
   for (const auto& [tid, factorStore] : opt.factorStores.stores) {
+    if (factorStore->role() != small_thing::FactorStoreBase::kRoleNormal) {
+      continue; // (loop closure: matrix-free and preconditioner-only stores)
+    }
     std::string name = factorStore->name();
     if (name.find("visual_inertial_ba::VisualFactor") != std::string::npos ||
         name.find("visual_inertial_ba::RollingShutterVisualFactor") != std::string::npos) {

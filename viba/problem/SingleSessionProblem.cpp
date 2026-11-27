@@ -45,6 +45,13 @@ void SingleSessionProblem::registerPointVariables() {
   for (auto& ptVar : pointTracks_) {
     opt_.registerVariable(ptVar);
   }
+  // loop-closing points and their virtual points (none without loop closure)
+  for (auto& ptVar : loopPoints_) {
+    opt_.registerVariable(ptVar);
+  }
+  for (auto& ptVar : loopVirtualPoints_) {
+    opt_.registerVariable(ptVar);
+  }
 }
 
 std::optional<int64_t> SingleSessionProblem::firstRigIndex() const {

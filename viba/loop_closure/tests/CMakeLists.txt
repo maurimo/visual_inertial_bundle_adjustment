@@ -1,0 +1,3 @@
+add_executable(TestLoopClosure TestLoopClosure.cpp)
+target_link_libraries(TestLoopClosure ark_loop_closure gtest_main)
+gtest_discover_tests(TestLoopClosure)

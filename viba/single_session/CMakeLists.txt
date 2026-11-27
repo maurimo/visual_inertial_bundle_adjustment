@@ -23,5 +23,5 @@ add_library(ark_single_session
    Triangulation.h
 )
 set_property(TARGET ark_single_session PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ark_single_session ark_session_data ark_problem)
+target_link_libraries(ark_single_session ark_session_data ark_problem ark_loop_closure)
 target_include_directories(ark_single_session PUBLIC "../..")

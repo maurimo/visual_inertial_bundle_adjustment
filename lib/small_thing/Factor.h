@@ -12,7 +12,9 @@
 #include <small_thing/Print.h>
 #include <small_thing/SoftLoss.h>
 #include <small_thing/Variable.h>
+#include <Eigen/Cholesky>
 #include <Eigen/Geometry>
+#include <type_traits>
 #include <unordered_set>
 
 namespace small_thing {
@@ -87,6 +89,54 @@ class FactorStoreBase {
 
   virtual void registerBlocks(
       std::unordered_set<std::pair<int64_t, int64_t>, pair_hash>& blocks) = 0;
+
+  // How the optimizer uses the store (see Optimizer::Settings::matrixFree):
+  //   kRoleNormal: cost, gradient, Hessian blocks (registered with the solver);
+  //   kRoleMatrixFree: cost and gradient only, no Hessian and no blocks in the solver's pattern
+  //     (its curvature enters through a MatrixFreeTerm);
+  //   kRolePreconditionerOnly: Hessian only (it builds the factorized preconditioner), no cost and
+  //     no gradient.
+  static constexpr int kRoleNormal = 0;
+  static constexpr int kRoleMatrixFree = 1;
+  static constexpr int kRolePreconditionerOnly = 2;
+  virtual int role() const {
+    return kRoleNormal;
+  }
+
+  // Factor k linearized: the variables (non-constant ones), their tangent dimensions, and the
+  // whitened error and Jacobian (columns in the order of `vars`) scaled so that J^T J and J^T e
+  // are the Gauss-Newton Hessian and gradient the store adds (robust weight and precision matrix
+  // included). Returns false if the factor fails.
+  virtual bool linearizeFactor(
+      int64_t /* k */,
+      std::vector<VarBase*>& /* vars */,
+      std::vector<int>& /* dims */,
+      Eigen::VectorXd& /* wErr */,
+      Eigen::MatrixXd& /* wJac */) const {
+    return false;
+  }
+};
+
+// a factor type can declare its role with `static constexpr int kFactorRole = ...`
+template <class F, class = void>
+struct FactorRoleOf {
+  static constexpr int value = FactorStoreBase::kRoleNormal;
+};
+template <class F>
+struct FactorRoleOf<F, std::void_t<decltype(F::kFactorRole)>> {
+  static constexpr int value = F::kFactorRole;
+};
+
+// A factor used only in the preconditioner (FactorStoreBase::kRolePreconditionerOnly)
+template <class F>
+struct PreconditionerOnly {
+  static constexpr int kFactorRole = FactorStoreBase::kRolePreconditionerOnly;
+  explicit PreconditionerOnly(F f) : f_(std::move(f)) {}
+  template <class... A>
+  auto operator()(A&&... a) const {
+    return f_(std::forward<A>(a)...);
+  }
+  F f_;
 };
 
 struct ResultCache {
@@ -250,6 +300,71 @@ class FactorStore : public FactorStoreBase {
   // [opaque] get a pretty typename of the underlying type
   virtual std::string name() const override {
     return prettyTypeName<FactorStore>();
+  }
+
+  virtual int role() const override {
+    return FactorRoleOf<std::decay_t<Factor>>::value;
+  }
+
+  virtual bool linearizeFactor(
+      int64_t k,
+      std::vector<VarBase*>& vars,
+      std::vector<int>& dims,
+      Eigen::VectorXd& wErr,
+      Eigen::MatrixXd& wJac) const override {
+    auto& factor = std::get<0>(boundFactors[k]);
+    auto& args = std::get<1>(boundFactors[k]);
+    const auto& loss = getLoss(k);
+    return withStaticRange<0, sizeof...(Variables)>([&](auto... iWrapIndices) -> bool {
+      std::tuple<Eigen::Map<Eigen::Matrix<double, ErrorSize, Variables::TangentDimSpec>>...>
+      jacobians(Eigen::Map<Eigen::Matrix<double, ErrorSize, Variables::TangentDimSpec>>(
+          std::get<decltype(iWrapIndices)::value>(args)->isSetToConstant()
+              ? nullptr
+              : (double*)alloca(
+                    sizeof(double) * ErrorSize *
+                    std::get<decltype(iWrapIndices)::value>(args)->getTangentDim()),
+          ErrorSize,
+          std::get<decltype(iWrapIndices)::value>(args)->getTangentDim())...);
+      const RawErrorType rawErr = factor(
+          std::get<decltype(iWrapIndices)::value>(args)->value...,
+          std::get<decltype(iWrapIndices)::value>(jacobians)...);
+      if constexpr (HasOptionalErrors) {
+        if (!rawErr.has_value()) {
+          return false;
+        }
+      }
+      const ErrorType& err = unpackedOpt(rawErr);
+      const double dSoft = loss.jet2(squaredError(k, err)).second;
+      const double w = std::sqrt(std::max(dSoft, 0.0));
+      Eigen::Matrix<double, ErrorSize, ErrorSize> Lt =
+          Eigen::Matrix<double, ErrorSize, ErrorSize>::Identity();
+      if constexpr (HasPrecisionMatrix) {
+        Lt = std::get<PrecisionMatrixIndex>(boundFactors[k]).llt().matrixU();
+      }
+      vars.clear();
+      dims.clear();
+      int total = 0;
+      forEach<0, sizeof...(Variables)>([&](auto iWrap) {
+        static constexpr int i = decltype(iWrap)::value;
+        if (!std::get<i>(args)->isSetToConstant()) {
+          vars.push_back(std::get<i>(args));
+          dims.push_back(std::get<i>(args)->getTangentDim());
+          total += dims.back();
+        }
+      });
+      wErr = w * (Lt * err);
+      wJac.resize(ErrorSize, total);
+      int col = 0;
+      forEach<0, sizeof...(Variables)>([&](auto iWrap) {
+        static constexpr int i = decltype(iWrap)::value;
+        if (!std::get<i>(args)->isSetToConstant()) {
+          const int d = std::get<i>(args)->getTangentDim();
+          wJac.middleCols(col, d) = w * (Lt * std::get<i>(jacobians));
+          col += d;
+        }
+      });
+      return true;
+    });
   }
 
   // [opaque] do jacobian verification
@@ -608,14 +723,16 @@ class FactorStore : public FactorStoreBase {
         }
         iAdjJac *= dSoftErr;
 
-        // gradient contribution
-        int64_t paramStart = acc.paramStart(iIndex);
-        Eigen::Map<Eigen::Vector<double, iTangentDimSpec>> gradSeg(
-            gradData + paramStart, iTangentDim);
-        Eigen::Map<Eigen::Vector<double, iTangentDimSpec>> gradSegAdd(
-            (double*)alloca(sizeof(double) * iTangentDim), iTangentDim);
-        gradSegAdd.noalias() = err.transpose() * iAdjJac;
-        Ops::vectorAdd(gradSeg, gradSegAdd);
+        // gradient contribution (none for a store used in the preconditioner only)
+        if (gradData) {
+          int64_t paramStart = acc.paramStart(iIndex);
+          Eigen::Map<Eigen::Vector<double, iTangentDimSpec>> gradSeg(
+              gradData + paramStart, iTangentDim);
+          Eigen::Map<Eigen::Vector<double, iTangentDimSpec>> gradSegAdd(
+              (double*)alloca(sizeof(double) * iTangentDim), iTangentDim);
+          gradSegAdd.noalias() = err.transpose() * iAdjJac;
+          Ops::vectorAdd(gradSeg, gradSegAdd);
+        }
 
         if (hessData) {
           forEach<0, i>([&](auto jWrap) {
