@@ -125,6 +125,68 @@ tools/slamdunk_to_viba/compare.sh room1 run2 /tmp/viba_cmp      # see the script
 COLMAP models with IMU data), a consistency check of VIBA inputs and a driver of experiments over datasets and
 camera models, see [its README](tools/viba_input/README.md).
 
+### Aria recordings (LaMAria): SLAM Dunk results
+
+Other estimators' results on Project Aria Gen1 recordings (e.g. the [LaMAria](https://github.com/cvg/lamaria)
+benchmark) can be refined by VIBA: `tools/slamdunk_to_viba` converts SLAM Dunk's (`aria_slamdunk_to_viba.py`,
+`sd_start.py`), `tools/loop_closure` prepares the loop-closing points, `tools/aria_postprocess` turns VIBA's output
+into a trajectory for evaluation. The inputs start from the VRS extraction of the recording (factory calibration,
+raw `imu-right` samples):
+
+```
+python3 tools/process_vrs/process_vrs.py -i $VRS -o $VRS_OUT
+```
+
+The inputs they write have the Aria cameras `camera-slam-left/right`, so `--profile auto` (the default) picks the
+Aria profile: parasitic-light row time, half-sample IMU timing, Earth rotation. The row-time model needs the
+exposure of every image, `expo_cam0.csv` / `expo_cam1.csv` (lines `t_ns,exposure_s`, e.g. from the image records'
+exposure in the VRS) in the input folder or in `--pls-dir`; without them it is off. The runs below used
+`--num-threads 4 --num-passes 2 --max-num-iterations 50`.
+
+**SLAM Dunk's result, refined** (its optimized key frames and final, outlier-filtered observations).
+`$RUN` is a SLAM Dunk run folder (`estimate/work/...`), `$REC` the recording folder SLAM Dunk extracted:
+
+```
+python3 tools/slamdunk_to_viba/aria_slamdunk_to_viba.py --run $RUN --rec $REC --vrs $VRS_OUT --out $IN --init final
+build/interfaces/ark/ark_vi_ba -i $IN -o $OUT
+```
+
+**SLAM Dunk's loop-closed input, with loop closure in VIBA.** `--init input` takes the state and the observations
+SLAM Dunk's global bundle adjustment starts from: its pose-graph trajectory, and tracking points whose ids are
+shared by the revisits (the loop-closing points). VIBA's open-loop problem is a band in time, so the points seen
+again after a gap are split off and given to the loop closure (`--lc-tracks`, optionally `--lc-matches` for the
+pose-graph stage; loop closure runs if and only if one of them is given):
+
+```
+python3 tools/slamdunk_to_viba/aria_slamdunk_to_viba.py --run $RUN --rec $REC --vrs $VRS_OUT --out $SD_IN --init input
+python3 tools/loop_closure/lc_split_viba_input.py $SD_IN/session_observations.csv $SPLIT --gap 27
+mkdir -p $IN && for f in $SD_IN/*; do ln -s $f $IN/; done
+ln -sf $SPLIT/session_observations.csv $IN/session_observations.csv   # points without a gap of more than 27 s
+build/interfaces/ark/ark_vi_ba -i $IN -o $OUT --lc-tracks $SPLIT/loop_tracks.csv --lc-matches $SPLIT/lc_matches.csv
+```
+
+To start instead from SLAM Dunk's VIO before its pose graph (or any other trajectory: lines `t_ns x y z qx qy qz
+qw` of the IMU), `sd_start.py` fits that trajectory into the input's world and writes the starting states; the
+rest of `$IN` is as above:
+
+```
+head -1 $SD_IN/online_calibration.jsonl > $SPLIT/calib1.json
+python3 tools/slamdunk_to_viba/sd_start.py $SD_IN/open_loop_trajectory.csv $SPLIT/calib1.json $VIO_POSES \
+        $SPLIT/open_loop_trajectory.csv --no-body-offset
+ln -sf $SPLIT/open_loop_trajectory.csv $IN/open_loop_trajectory.csv
+```
+
+On LaMAria's `sequence_1_20` (21 min) both starts reach the same solution, 98.3 % and 97.3 % of the benchmark's
+control-point score, against 91.1 % for SLAM Dunk's own loop-closed batch.
+
+**Output for evaluation.** `postprocess.py` writes the optimized trajectory of the IMU at every camera frame between
+the first and the last key frame (`traj.txt`, `t[s] x y z qx qy qz qw`, the IMU integrated with VIBA's calibration
+between key frames), plus the key frames alone and the calibration over time:
+
+```
+python3 tools/aria_postprocess/postprocess.py $IN $OUT $REC/cam0/data.csv $DEST
+```
+
 ## How to build
 
 The only git submodule is `deps/baspacho`; populate it if needed:
