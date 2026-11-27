@@ -10,6 +10,7 @@
 #include <small_thing/Common.h>
 
 #include <functional>
+#include <limits>
 #include <typeinfo>
 
 #include <baspacho/baspacho/Accessor.h>
@@ -251,6 +252,10 @@ struct VarBase {
   }
 
   int64_t index = kUnsetIndex;
+
+  // position of the variable in an a-priori elimination order (Optimizer::Order_Keyed), e.g. the
+  // time of a key rig; NaN: none (see Optimizer::initSolver)
+  double orderingKey = std::numeric_limits<double>::quiet_NaN();
 };
 
 template <typename DType>
@@ -303,6 +308,8 @@ class VariableStoreBase {
 
   // calls f(index, tangent dim) for every registered variable; name of the variable type
   virtual void forEachRegistered(const std::function<void(int64_t, int64_t)>& f) const = 0;
+  // calls f(index, ordering key) for every registered variable
+  virtual void forEachRegisteredOrderingKey(const std::function<void(int64_t, double)>& f) const = 0;
   virtual const char* typeName() const = 0;
 };
 
@@ -380,6 +387,15 @@ class VariableStore : public VariableStoreBase {
     for (const auto& var : variables) {
       if (var->index >= 0) {
         f(var->index, var->getTangentDim());
+      }
+    }
+  }
+
+  virtual void forEachRegisteredOrderingKey(
+      const std::function<void(int64_t, double)>& f) const override {
+    for (const auto& var : variables) {
+      if (var->index >= 0) {
+        f(var->index, var->orderingKey);
       }
     }
   }

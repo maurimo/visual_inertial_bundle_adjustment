@@ -1,4 +1,4 @@
 [submodule "deps/baspacho"]
 	path = deps/baspacho
 	url = https://github.com/maurimo/baspacho
-	branch = mau/merge-opt
+	branch = mau/fixed-order

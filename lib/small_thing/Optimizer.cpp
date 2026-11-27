@@ -8,8 +8,12 @@
 // @lint-ignore-every CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
 #include <baspacho/baspacho/Solver.h>
 #include <small_thing/Optimizer.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
+#include <numeric>
 
 namespace small_thing {
 
@@ -183,7 +187,8 @@ std::string Optimizer::solverToString(SolverType solverType) {
 BaSpaCho::SolverPtr Optimizer::initSolver(
     int numThreads,
     bool fullElim,
-    const std::unordered_set<int64_t>& paramsToReorderLast) {
+    const std::unordered_set<int64_t>& paramsToReorderLast,
+    EliminationOrder eliminationOrder) {
   // make sure all variables are registered
   registerAllVariables();
 
@@ -215,10 +220,56 @@ BaSpaCho::SolverPtr Optimizer::initSolver(
     curRow++;
   }
 
+  // a-priori order of the reduced system (the variables after the elimination ranges)
+  BaSpaCho::Settings solverSettings{
+      .numThreads = numThreads,
+      .addFillPolicy = (fullElim ? BaSpaCho::AddFillComplete : BaSpaCho::AddFillForGivenElims)};
+  if (fullElim && eliminationOrder == Order_Keyed) {
+    const int64_t elimEnd = elimRanges.empty() ? 0 : elimRanges.back();
+    const int64_t n = (int64_t)paramSizes.size() - elimEnd;
+    std::vector<double> key(n, std::numeric_limits<double>::quiet_NaN());
+    for (const auto& [_, vStore] : variableStores.stores) {
+      vStore->forEachRegisteredOrderingKey([&](int64_t index, double k) {
+        if (index >= elimEnd) {
+          key[index - elimEnd] = k;
+        }
+      });
+    }
+    // variables without a key: the largest key of their neighbours (a calibration window goes
+    // after the key rigs it couples), else last
+    std::vector<double> derived(n, -std::numeric_limits<double>::infinity());
+    for (int64_t r = 0; r < (int64_t)paramSizes.size(); r++) {
+      for (int64_t q = ptrs[r]; q < ptrs[r + 1]; q++) {
+        const int64_t c = inds[q];
+        if (r < elimEnd || c < elimEnd || r == c) {
+          continue;
+        }
+        const int64_t i = r - elimEnd, j = c - elimEnd;
+        if (std::isnan(key[i]) && !std::isnan(key[j])) {
+          derived[i] = std::max(derived[i], key[j]);
+        }
+        if (std::isnan(key[j]) && !std::isnan(key[i])) {
+          derived[j] = std::max(derived[j], key[i]);
+        }
+      }
+    }
+    for (int64_t i = 0; i < n; i++) {
+      if (std::isnan(key[i])) {
+        key[i] = derived[i] > -std::numeric_limits<double>::infinity()
+            ? derived[i]
+            : std::numeric_limits<double>::infinity();
+      }
+    }
+    std::vector<int64_t> perm(n);
+    std::iota(perm.begin(), perm.end(), 0);
+    std::stable_sort(
+        perm.begin(), perm.end(), [&](int64_t a, int64_t b) { return key[a] < key[b]; });
+    solverSettings.bottomPermutation = std::move(perm);
+  }
+
   // create sparse linear solver
   return createSolver(
-      {.numThreads = numThreads,
-       .addFillPolicy = (fullElim ? BaSpaCho::AddFillComplete : BaSpaCho::AddFillForGivenElims)},
+      solverSettings,
       paramSizes,
       BaSpaCho::SparseStructure(std::move(ptrs), std::move(inds)),
       elimRanges,
@@ -437,7 +488,8 @@ void Optimizer::initDirectSolverData(
     DirectSolverData& ds,
     const Settings& settings,
     const std::unordered_set<int64_t>& paramsToReorderLast) {
-  ds.solver = initSolver(settings.numThreads, true, paramsToReorderLast);
+  ds.solver =
+      initSolver(settings.numThreads, true, paramsToReorderLast, settings.eliminationOrder);
   ds.grad.setZero(ds.solver->order());
   ds.hess.setZero(ds.solver->dataSize());
 
@@ -806,7 +858,7 @@ Optimizer::linearSolveForTest(const Settings& settings, double damping, bool den
   const bool full = settings.solverType == Solver_Direct ||
       settings.solverType == Solver_PCG_LowerPrecSolve ||
       settings.solverType == Solver_PCG_MatrixFree;
-  BaSpaCho::SolverPtr solver = initSolver(settings.numThreads, full);
+  BaSpaCho::SolverPtr solver = initSolver(settings.numThreads, full, {}, settings.eliminationOrder);
   const auto& accessor = solver->accessor();
   LinearSolve out;
   out.grad.setZero(solver->order());
@@ -898,7 +950,9 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
   BaSpaCho::SolverPtr solver = initSolver(
       settings.numThreads,
       (settings.solverType == Solver_Direct || settings.solverType == Solver_PCG_LowerPrecSolve ||
-       settings.solverType == Solver_PCG_MatrixFree));
+       settings.solverType == Solver_PCG_MatrixFree),
+      {},
+      settings.eliminationOrder);
   const auto& accessor = solver->accessor();
 
   // linear system data
@@ -907,6 +961,9 @@ Optimizer::Summary Optimizer::optimize(const Settings& settings) {
   if (settings.log) {
     std::stringstream ss;
     ss << "allocating Hessian matrix: " << humanReadableSize(sizeof(double) * solver->dataSize());
+    if (settings.eliminationOrder == Order_Keyed) {
+      ss << " (elimination order by key)";
+    }
     settings.log(ss.str());
   }
   Eigen::VectorXd hess(solver->dataSize());

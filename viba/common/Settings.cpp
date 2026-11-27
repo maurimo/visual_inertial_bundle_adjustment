@@ -441,6 +441,14 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
              "; default: direct, and auto is direct: no automatic switch to an iterative solver)")
       ->group(group);
   app.add_option(
+         "--elimination-order",
+         eliminationOrderArg,
+         "Elimination order of the reduced system for the direct solver: time (default; key "
+         "rigs by timestamp, a calibration window after its last key rig, global variables last) "
+         "or amd (BaSpaCho's fill-reducing order)")
+      ->check(CLI::IsMember({"time", "amd"}))
+      ->group(group);
+  app.add_option(
          "--pcg-max-iterations",
          pcgMaxIterations,
          "Max iterations for PCG iterative solvers (Gauss-Seidel or Jacobi), default: 40")
@@ -503,6 +511,8 @@ Optimizer::Settings OptimizerSettings::getSettings(int pass) const {
       .maxNumIterations = maxNumIterations,
       .numThreads = numThreads,
       .solverType = solverIt->second,
+      .eliminationOrder =
+          eliminationOrderArg == "amd" ? Optimizer::Order_Amd : Optimizer::Order_Keyed,
       .pcgMaxIterations = pcgMaxIterations,
       .absoluteCostTolerance = absoluteCostTolerance,
       .relativeCostTolerance = relativeCostTolerance,

@@ -201,6 +201,10 @@ void SingleSessionProblem::inertialPose_set(
       .omega = omega,
       .timestampUs = timestampUs,
   };
+  // the a-priori elimination order (--elimination-order time): the key rigs by time
+  auto& rig = inertialPoses_[rigIndex];
+  rig.T_bodyImu_world.orderingKey = rig.vel_world.orderingKey = rig.omega.orderingKey =
+      static_cast<double>(timestampUs);
 }
 
 InertialPoseVariables& SingleSessionProblem::inertialPose(int64_t rigIndex) {

@@ -40,11 +40,21 @@ class Optimizer {
     Solver_PCG_MatrixFree,
   };
 
+  // elimination order of the variables left after the sparse elimination ranges (the reduced
+  // system), for the direct factor
+  enum EliminationOrder {
+    Order_Amd, // fill-reducing order found by BaSpaCho (approximate minimum degree)
+    // by VarBase::orderingKey (ties by index); a variable without a key takes the largest key of
+    // the variables it shares a block with, or goes last if none has one (initSolver)
+    Order_Keyed,
+  };
+
   // settings for optimize function
   struct Settings {
     int maxNumIterations = 50;
     unsigned int numThreads = 8;
     SolverType solverType = Solver_Direct;
+    EliminationOrder eliminationOrder = Order_Amd;
     int pcgMaxIterations = 40;
     double pcgDesiredResidual = 1e-10;
 
@@ -301,7 +311,8 @@ class Optimizer {
   BaSpaCho::SolverPtr initSolver(
       int numThreads,
       bool fullElim = true,
-      const std::unordered_set<int64_t>& paramsToReorderLast = {});
+      const std::unordered_set<int64_t>& paramsToReorderLast = {},
+      EliminationOrder eliminationOrder = Order_Amd);
 
   // creates a "solve" function that will either
   // 1. invoke the direct solver

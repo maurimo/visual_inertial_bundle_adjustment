@@ -183,6 +183,12 @@ struct OptimizerSettings {
   // switch to an iterative solver: PCG with Gauss-Seidel does not converge at low damping, and the
   // direct solver's memory grows linearly (1.7 GB at 10 130 key rigs).
   std::string linearSolverArg = "direct";
+  // order in which the direct solver eliminates the reduced system (key rigs, calibration, knots,
+  // after the points): "time" (default: key rigs by timestamp, a calibration window or knot after
+  // the last key rig it couples, global variables last) or "amd" (BaSpaCho's fill-reducing order).
+  // The problem is a band in time; on R_11_5cp with the row-time model AMD gives a factor of
+  // 4.3 GB and 3 min 15 s per factorization, the time order 1.7 GB and 28 s (same iterates).
+  std::string eliminationOrderArg = "time";
   int pcgMaxIterations = 40;
   bool dontOptimize = false;
   bool verifyJacobians = false;
