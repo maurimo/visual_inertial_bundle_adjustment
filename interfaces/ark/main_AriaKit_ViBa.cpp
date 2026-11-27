@@ -35,31 +35,37 @@ using namespace small_thing;
 using namespace visual_inertial_ba;
 
 // One pass: load, triangulate, optimize, save.
-// Experiments on the speed of convergence (environment, all off by default):
-//   VIBA_ITER_DUMP=<dir>        key-rig poses before every iteration and at the end of every
-//                               optimizer call: <dir>/p<pass>_c<call>_i<iteration|end>.txt,
-//                               't[s] x y z qx qy qz qw' of the body (IMU) in the world
-//   VIBA_PASS_MAX_ITERS=a,b,..  iteration limit of pass 1, 2, .. (missing: --max-num-iterations)
-//   VIBA_PASS_REL_TOL=a,b,..    relative cost tolerance of pass 1, 2, .. (missing: the default)
-//   VIBA_PASS_ABS_TOL=a,b,..    absolute cost tolerance of pass 1, 2, .. (missing: the default)
-//   VIBA_PASS_INIT_DAMPING=a,.. damping at the start of pass 1, 2, .. (missing: --initial-damping)
-//   VIBA_YAW_KNOT_FOLD=0        yaw-drift knots put into the trajectory at the end of an optimizer
-//                               call only (default: before every iteration)
+//
+// Device profile (--profile auto|aria|generic, InitSettings::applyDeviceProfile): the defaults of
+// --pls-scale, --imu-half-sample and --earth-rate-up (on for Project Aria glasses, off otherwise);
+// options given on the command line are kept.
+//
+// The optimizer's damping and stopping schedule are options (OptimizerSettings):
+// --damping-good-factor, --initial-damping, --later-pass-initial-damping, --min-damping,
+// --relative-cost-tolerance, --absolute-cost-tolerance, --stop-step-mm. They replace the
+// environment variables VIBA_DAMPING_GOOD, VIBA_PASS_INIT_DAMPING, VIBA_PASS_ABS_TOL,
+// VIBA_PASS_REL_TOL, VIBA_STOP_POS_MM and VIBA_PASS_MAX_ITERS, which have no effect any more
+// (nor have VIBA_ITER_DUMP, now --dump-iterations, and the removed VIBA_STEP_DIAG,
+// VIBA_STEP_EXTEND, VIBA_PCG_RESIDUAL, VIBA_YAW_KNOT_FOLD).
+//
+// Test hooks of the yaw-drift knots (environment, off by default):
 //   VIBA_YAW_GAUGE_TEST=<rad/s> yaw-drift knots away from 0 with the variables changed to
 //                               compensate, before the optimization: the histogram printed after
-//                               it has to be that printed before
-//   (VIBA_YAW_KNOT_INIT=<rad/s> starts the knots away from 0, for --verify-jacobians)
-//   VIBA_STOP_POS_MM=a,b,..     pass 1, 2, ..: an iteration that moves no key rig by more than this
-//                               (position, mm) counts as converged (3 in a row at the damping floor
-//                               stop the pass, as for the cost tolerances); 0 or missing: off
+//                               it has to be that printed before (neutrality of the knots)
+//   VIBA_YAW_KNOT_INIT=<rad/s>  starts the knots away from 0, for --verify-jacobians
+//                               (SingleSessionProblem.cpp; TestLoopBundle sets it)
 static int gPass = 1;
 static int gOptimizerCall = 0;
+static std::string gDumpDir; // --dump-iterations
 
+// --dump-iterations <dir>: key-rig poses before every iteration and at the end of every optimizer
+// call, <dir>/p<pass>_c<call>_i<iteration|end>.txt, 't[s] x y z qx qy qz qw' of the body (IMU) in
+// the world
 static void dumpRigPoses(const SingleSessionProblem& problem, const std::string& tag) {
-  const char* dir = std::getenv("VIBA_ITER_DUMP");
-  if (dir == nullptr) {
+  if (gDumpDir.empty()) {
     return;
   }
+  const std::string& dir = gDumpDir;
   std::filesystem::create_directories(dir);
   // (the true states: the variables with the yaw-drift knots applied, if there are any)
   std::vector<std::pair<int64_t, SE3>> poses;
@@ -75,17 +81,6 @@ static void dumpRigPoses(const SingleSessionProblem& problem, const std::string&
         "{:.6f} {:.9f} {:.9f} {:.9f} {:.10f} {:.10f} {:.10f} {:.10f}\n",
         timestampUs * 1e-6, p.x(), p.y(), p.z(), q.x(), q.y(), q.z(), q.w());
   }
-}
-
-static double nthOf(const char* list, int index, double fallback) {
-  std::stringstream ss(list);
-  std::string item;
-  for (int i = 0; std::getline(ss, item, ','); i++) {
-    if (i == index && !item.empty()) {
-      return std::atof(item.c_str());
-    }
-  }
-  return fallback;
 }
 
 // factory IMU time offsets (instantaneous sample times) -> the pre-integration's convention
@@ -154,13 +149,16 @@ static void adjustImuTimeOffsets(SessionData& fData, const InitSettings& s) {
 
 
 // ---------------------------------------------------------------------------------------------
-// Loop closure (off by default: --lc-matches). See viba/loop_closure/LoopClosure.h and LC_IMPL.md
-// in the main repository. Runs after the open-loop optimization of the last pass: LC-KRs and
-// candidates, 5-point verification, pose graph stages 1 and 2 (variant --lc-variant), and the
-// corrections put into the trajectory through the drift-knot transform.
+// Loop closure: runs when loop data (--lc-matches / --lc-tracks) is given, and only then. See
+// viba/loop_closure/LoopClosure.h and LC_IMPL.md in the main repository. Runs after the open-loop
+// optimization of the last pass: LC-KRs and candidates, 5-point verification, pose graph stages 1
+// and 2 (variant --lc-variant), the corrections put into the trajectory through the drift-knot
+// transform, then the loop-closed bundle adjustment. The pose graph's correspondences are those of
+// --lc-matches, or, without it, the pairs between consecutive visits of the loop tracks.
 struct LcOptions {
-  std::string matches; // match file (empty: no loop closure)
-  std::string mode = "pg"; // pg: pose graph only
+  std::string matches; // match file (empty: derived from the loop tracks, if given)
+  std::string mode = "ba"; // ba (or full): pose graph, then loop-closed BA; pg: pose graph only
+  int trackPairs = 20; // without --lc-matches: correspondences per pair of visits of a loop track
   std::string variant = "poses"; // poses | knots
   double knotSec = 0.0; // knots variant: interval length; 0: the problem's drift-knot intervals
   loop::LoopClosureSettings s;
@@ -186,15 +184,17 @@ static void addLcOptions(CLI::App& app, LcOptions& o) {
   app.add_option(
       "--lc-matches",
       o.matches,
-      "Loop closure (off by default): file of wide-baseline correspondences "
-      "(t_a_us,cam_a,t_b_us,cam_b,u_a,v_a,u_b,v_b; tools/viba_lc). Runs after the open-loop "
+      "Loop closure: runs when loop data (--lc-matches / --lc-tracks) is given. File of "
+      "wide-baseline correspondences for the pose graph (t_a_us,cam_a,t_b_us,cam_b,u_a,v_a,u_b,v_b; "
+      "tools/viba_lc); without it they are derived from --lc-tracks. Runs after the open-loop "
       "optimization of the last pass");
   app.add_option(
       "--lc-mode",
       o.mode,
-      "pg: pose graph stages 1 and 2, corrections into the trajectory; ba: then the loop-closed "
-      "bundle adjustment (loop points with all their observations, PCG with the factor of the "
-      "banded problem as preconditioner)");
+      "ba (default; also: full): pose graph stages 1 and 2, corrections into the trajectory, then "
+      "the loop-closed bundle adjustment (loop points with all their observations, PCG with the "
+      "factor of the banded problem as preconditioner); pg: the pose graph only (diagnostic)")
+      ->check(CLI::IsMember({"ba", "full", "pg"}));
   app.add_option("--lc-ba-iters", o.baIterations, "ba: iterations");
   app.add_option("--lc-pcg-iters", o.pcgIterations, "ba: PCG iterations per step");
   app.add_option("--lc-pcg-residual", o.pcgResidual, "ba: relative residual of the PCG");
@@ -203,8 +203,15 @@ static void addLcOptions(CLI::App& app, LcOptions& o) {
   app.add_option(
       "--lc-tracks",
       o.tracks,
-      "ba: loop tracks (track,visit,t_us,cam,u,v; tools/viba_lc/lc_sift_tracks.py): the loop points "
-      "with all their observations, grouped by visit (instead of the matches of the pairs)");
+      "Loop closure: runs when loop data (--lc-matches / --lc-tracks) is given. Loop tracks "
+      "(track,visit,t_us,cam,u,v; tools/viba_lc/lc_sift_tracks.py): the loop points of the "
+      "loop-closed BA with all their observations, grouped by visit (instead of the matches of the "
+      "pairs); without --lc-matches also the pose graph's correspondences (see --lc-track-pairs)");
+  app.add_option(
+      "--lc-track-pairs",
+      o.trackPairs,
+      "Without --lc-matches: the pose graph's correspondences from the loop tracks, at most this "
+      "many observation pairs per pair of consecutive visits of a track (default: 20)");
   app.add_option("--lc-pcg-adaptive", o.pcgAdaptive, "ba: Eisenstat-Walker PCG tolerance (else --lc-pcg-residual)");
   app.add_option("--lc-pcg-eta-min", o.pcgEtaMin, "ba: floor of the adaptive PCG tolerance");
   app.add_option("--lc-pcg-eta-max", o.pcgEtaMax, "ba: cap of the adaptive PCG tolerance");
@@ -258,11 +265,22 @@ static bool runLoopClosureStage(
     const std::filesystem::path& outputsDir) {
   using namespace visual_inertial_ba::loop;
   std::string err;
-  const auto src = CsvMatchSource::load(gLc.matches, &err);
+  std::unique_ptr<CsvMatchSource> src;
+  if (!gLc.matches.empty()) {
+    src = CsvMatchSource::load(gLc.matches, &err);
+  } else {
+    std::vector<LoopTrackObs> obs;
+    if (loadLoopTracks(gLc.tracks, obs, &err)) {
+      src = CsvMatchSource::fromLoopTracks(obs, gLc.trackPairs);
+    }
+  }
   if (!src) {
     std::cerr << "Loop closure: " << err << std::endl;
     return false;
   }
+  const std::string srcName = !gLc.matches.empty()
+      ? gLc.matches
+      : fmt::format("{} (pairs of consecutive visits, at most {})", gLc.tracks, gLc.trackPairs);
   LoopClosureSettings s = gLc.s;
   if (gLc.variant == "knots") {
     s.variant = PoseGraphVariant::Knots;
@@ -270,7 +288,7 @@ static bool runLoopClosureStage(
     std::cerr << "Loop closure: unknown --lc-variant " << gLc.variant << std::endl;
     return false;
   }
-  if (gLc.mode != "pg" && gLc.mode != "ba") {
+  if (gLc.mode != "pg" && gLc.mode != "ba" && gLc.mode != "full") {
     std::cerr << "Loop closure: --lc-mode " << gLc.mode << " is not implemented" << std::endl;
     return false;
   }
@@ -317,7 +335,7 @@ static bool runLoopClosureStage(
                    "Loop closure: {} key rigs, {} correspondences in {}, variant {}",
                    rigs.size(),
                    src->numCorrespondences(),
-                   gLc.matches,
+                   srcName,
                    gLc.variant)
             << std::endl;
   const LoopClosureResult res = runLoopClosure(rigs, cameras, *src, stats, s, &std::cout);
@@ -381,7 +399,7 @@ static bool runLoopClosureStage(
                    maxMove,
                    maxYaw * 180.0 / M_PI)
             << std::endl;
-  if (gLc.mode == "ba") {
+  if (gLc.mode != "pg") {
     return runLoopBundle(problem, adapter, opt, baseSettings, res);
   }
   return true;
@@ -729,24 +747,11 @@ static int runPass(
         problem.numExtrinsicsVariables(),
         problem.numImuCalibVariables());
 
-    auto settings = optSettings.getSettings(problem.numRigVariables());
-    if (const char* e = std::getenv("VIBA_PASS_MAX_ITERS")) {
-      settings.maxNumIterations = (int)nthOf(e, gPass - 1, settings.maxNumIterations);
-    }
-    if (const char* e = std::getenv("VIBA_PASS_REL_TOL")) {
-      settings.relativeCostTolerance = nthOf(e, gPass - 1, settings.relativeCostTolerance);
-    }
-    if (const char* e = std::getenv("VIBA_PASS_ABS_TOL")) {
-      settings.absoluteCostTolerance = nthOf(e, gPass - 1, settings.absoluteCostTolerance);
-    }
-    if (const char* e = std::getenv("VIBA_PASS_INIT_DAMPING")) {
-      settings.damping = nthOf(e, gPass - 1, settings.damping);
-    }
+    auto settings = optSettings.getSettings(gPass);
     std::unordered_map<int64_t, Vec3> lastRigPositions;
     double lastMaxRigStepMm = 1e30;
-    const char* stopPosEnv = std::getenv("VIBA_STOP_POS_MM");
-    const double stopPosMm = stopPosEnv ? nthOf(stopPosEnv, gPass - 1, 0.0) : 0.0;
-    if (stopPosMm > 0) {
+    const double stopStepMm = optSettings.stopStepMm;
+    if (stopStepMm > 0) {
       settings.userConvergedCallback = [&](int /* nIt */) {
         double maxStep = 0.0;
         for (const auto& s : problem.yawKnots_trueStates()) {
@@ -759,20 +764,15 @@ static int runPass(
         lastMaxRigStepMm = 1e3 * maxStep;
         std::cout << fmt::format("    largest key-rig position step: {:.4f} mm", lastMaxRigStepMm)
                   << std::endl;
-        return lastMaxRigStepMm < stopPosMm;
+        return lastMaxRigStepMm < stopStepMm;
       };
     }
     // the yaw-drift knots go into the trajectory before every iteration (variables = true
     // states, knots = 0, frozen copy taken again): left to accumulate over a call they take the
-    // variables far from the copy and steps start to fail. VIBA_YAW_KNOT_FOLD=0: only at the end
-    // of a call.
-    const bool foldYawKnots =
-        !(std::getenv("VIBA_YAW_KNOT_FOLD") && std::atoi(std::getenv("VIBA_YAW_KNOT_FOLD")) == 0);
+    // variables far from the copy and steps start to fail
     settings.preStepCallback = [&](int nIt) {
       dumpRigPoses(problem, std::to_string(nIt));
-      if (foldYawKnots) {
-        problem.yawKnots_apply();
-      }
+      problem.yawKnots_apply();
       if (initSettings.recomputedPreIntegrations) {
         const int64_t nRecomp = adapter.regenerateAllPreintegrationsFromImuMeasurements();
         std::cout << fmt::format("Re-computed {} preintegrations", nRecomp) << std::endl;
@@ -800,7 +800,7 @@ static int runPass(
     auto summary = opt.optimize(settings);
     dumpRigPoses(problem, "end");
     adapter.applyYawKnots();
-    if (lastPass && !gLc.matches.empty() &&
+    if (lastPass && (!gLc.matches.empty() || !gLc.tracks.empty()) &&
         !runLoopClosureStage(problem, adapter, opt, settings, outputsDir)) {
       return 1;
     }
@@ -893,6 +893,12 @@ int main(int argc, const char* argv[]) {
   initSettings.addCommandLine(app);
   optSettings.addCommandLine(app);
   addLcOptions(app, gLc);
+  app.add_option(
+      "--dump-iterations",
+      gDumpDir,
+      "Diagnostic: key-rig poses before every iteration and at the end of every optimizer call, "
+      "<dir>/p<pass>_c<call>_i<iteration|end>.txt ('t[s] x y z qx qy qz qw' of the body IMU in "
+      "the world)");
   app.add_option("-i,--input-dir", filterPathIn, "input folder path")->required();
   app.add_option("-o,--output-dir", outputsDir, "Output folder path");
   app.add_option("--rig-start", rigIndexStart, "Index of starting rig in recording");
@@ -906,6 +912,7 @@ int main(int argc, const char* argv[]) {
       "(intermediate results go to pass<k>/ and pass<k>_input/ inside it)");
 
   CLI11_PARSE(app, argc, argv);
+  initSettings.applyDeviceProfile(app, filterPathIn);
 
   if (numPasses > 1 && outputsDir.empty()) {
     std::cerr << "--num-passes needs --output-dir" << std::endl;

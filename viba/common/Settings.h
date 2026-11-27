@@ -21,6 +21,14 @@ namespace visual_inertial_ba {
 struct InitSettings {
   void addCommandLine(CLI::App& app);
 
+  // Device profile (--profile auto|aria|generic): defaults of the options that depend on the device.
+  // aria (Project Aria Gen1 glasses, as in LaMAria): parasitic-light row time on (plsScale 1),
+  // imuHalfSample on, earthRateUp 5.365e-5 (Zurich); generic: all three off (the defaults below).
+  // auto: aria when the factory calibration of the input has the cameras camera-slam-left and
+  // camera-slam-right, generic otherwise. Options given on the command line are kept. Call after
+  // parsing; returns the profile used and prints it in one line.
+  std::string applyDeviceProfile(const CLI::App& app, const std::filesystem::path& inputDir);
+  std::string profile = "auto";
 
   std::string calibConstant;
   std::string calibFactory;
@@ -81,9 +89,10 @@ struct InitSettings {
   // Aria's factory time offsets of gyroscope and accelerometer are instantaneous: the sample
   // stamped s is the value at s - offset. The pre-integration holds a sample over the interval
   // that ENDS at its (offset-corrected) stamp, so the offset to use is the factory one minus
-  // half a sample period (what MPS's online calibration reports). On by default; applied to the
-  // factory calibration (prior) and to an online calibration that still equals it.
-  bool imuHalfSample = true;
+  // half a sample period (what MPS's online calibration reports). Applied to the factory
+  // calibration (prior) and to an online calibration that still equals it. On in the aria profile;
+  // off in the generic one (the TUM-VI / EuRoC converters shift the IMU stamps themselves).
+  bool imuHalfSample = false;
   // The accelerometer samples are this much later than the factory offset says (ms; measured
   // between the two IMUs of a device: glasses A +0.37 on imu-right, glasses B -0.18). 0: off.
   double accelLaterMs = 0.0;
@@ -104,9 +113,9 @@ struct InitSettings {
   // Rotation of the Earth about the local vertical [rad/s] (7.292e-5 * sin(latitude); positive in
   // the northern hemisphere), taken out of the gyroscope's rotation in the inertial factors. The
   // horizontal component needs the direction of north and is left to the gyroscope bias. 0: off.
-  // The default is the value at 47.4 deg north (Zurich, the LaMAria recordings): give the value of
-  // the place of the recording.
-  double earthRateUp = 5.365e-5;
+  // Location dependent: the aria profile sets the value at 47.4 deg north (Zurich, the LaMAria
+  // recordings), 5.365e-5; the generic profile 0. Give the value of the place of the recording.
+  double earthRateUp = 0.0;
 
   // Scale of the IMU's metric as a function of time: one factor every scaleKnotSec seconds (0:
   // off), linearly interpolated at the mid time of an inertial factor, that multiplies gravity and
@@ -150,40 +159,50 @@ struct InitSettings {
   // patches, plsSmearCornerPx for corner tracks: observations of kind 0 in obs_kinds.csv).
   // The observation is taken at frame time + plsScale * D (the rolling-shutter visual factors).
   // Needs the exposure of every image: expo_cam<k>.csv (t_ns, exposure_s, ...) in plsDir (default:
-  // the input folder); without these files the model is off. plsScale = 0: off (the default: the
-  // model fits the images, lower cost, but did not improve the trajectories it was tried on).
+  // the input folder); without these files the model is off. plsScale: 1 in the aria profile, 0
+  // (off) in the generic one. The other values are those fitted on the Aria SLAM cameras.
   double plsScale = 0.0;
-  double plsEps = 1.0 / 90.0;
+  double plsEps = 1.0 / 89.0;
   double plsT0Ms = 0.35;
   double plsRowUs = 19.0;
-  double plsSmearPx = 1.2;
+  double plsSmearPx = 0.8;
   double plsSmearCornerPx = 5.0;
   std::string plsDir;
-  // How the model's time moves the body: 0: as a rolling shutter (motion from the inertial
-  // samples, velocity and gravity, with the Jacobians on velocity and attitude); 1: the same
-  // motion without those Jacobians (the row-time residuals do not pull on the velocity; the
-  // filter applies the model this way); 2: rotation only.
-  int plsMotion = 0;
-  // Test: instead of the model, every observation is taken plsLinearUsPerRow * (row - 239.5)
-  // microseconds after its frame (a plain row skew about the image centre, any exposure; with
-  // plsScale != 0 and the exposure files present). 0: off.
-  double plsLinearUsPerRow = 0.0;
 };
 
 struct OptimizerSettings {
   void
   addCommandLine(CLI::App& app, const std::string& group = "Optimizer", bool skipAdvanced = false);
 
-  small_thing::Optimizer::Settings getSettings(int numRigs, bool muted = false) const;
+  // pass: 1 for the first pass (--initial-damping), > 1 for the later ones
+  // (--later-pass-initial-damping)
+  small_thing::Optimizer::Settings getSettings(int pass = 1) const;
 
   int maxNumIterations = 250;
-  std::string linearSolverArg = "auto";
+  // direct (default; "auto" is the same) or one of the iterative solvers. There is no automatic
+  // switch to an iterative solver: PCG with Gauss-Seidel does not converge at low damping, and the
+  // direct solver's memory grows linearly (1.7 GB at 10 130 key rigs).
+  std::string linearSolverArg = "direct";
   int pcgMaxIterations = 40;
   bool dontOptimize = false;
   bool verifyJacobians = false;
   unsigned int numThreads = 8;
+
+  // Damping and stopping schedule. The joint corrections of trajectory and points (scale, heading)
+  // only happen once the damping is low; with the optimizer's own schedule (x0.7 per good step,
+  // from 1e-5) that takes 20-30 iterations, and most of a run is spent after the result is final.
+  // Hence: the damping comes down by 10 per good step to a floor of 1e-11, a later pass (which
+  // starts from the result of the previous one) starts at 1e-9, and the tolerances only count once
+  // the damping is at its floor (3 iterations in a row stop the optimization).
   double initialDamping = 1e-5;
-  double minDamping = 1e-9;
+  double laterPassInitialDamping = 1e-9;
+  double minDamping = 1e-11;
+  double dampingGoodFactor = 0.1;
+  double relativeCostTolerance = 1e-8;
+  double absoluteCostTolerance = 0.02;
+  // an iteration that moves no key rig by more than this [mm] counts as converged (ark_vi_ba; 0:
+  // off)
+  double stopStepMm = 0.5;
 
   int triggerDebuggingOfNonlinearities = -1;
 };

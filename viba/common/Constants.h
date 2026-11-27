@@ -12,8 +12,6 @@
 
 namespace visual_inertial_ba {
 
-constexpr int kNumRigsForIterative = 20000;
-
 constexpr double kDefaultGravityMagnitude = 9.81;
 
 constexpr double kMultiImuOmegaPriorStdRadSec = 10.0 * M_PI / 180;

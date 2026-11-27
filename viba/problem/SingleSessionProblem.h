@@ -21,9 +21,6 @@
 
 namespace visual_inertial_ba {
 
-// see VisualFactor.cpp (InitSettings::plsMotion)
-void setTimeShiftMotion(int mode);
-
 using small_thing::isNull;
 using small_thing::NullRef;
 

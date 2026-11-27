@@ -166,7 +166,7 @@ void runOptimizationThread(
           problem.numExtrinsicsVariables(),
           problem.numImuCalibVariables());
 
-      auto settings = optSettings.getSettings(problem.numRigVariables());
+      auto settings = optSettings.getSettings();
 
       // Track iteration data
       int iteration_counter = 0;
@@ -1210,6 +1210,9 @@ sapp_desc sokol_main(int argc, char* argv[]) {
   // Start optimization thread if input path provided
   // g_monitoring_state is now safely initialized above
   if (!filterPathIn.empty()) {
+    // (the half-sample IMU time offsets and the stop on key-rig steps are applied by
+    // main_AriaKit_ViBa.cpp only)
+    initSettings.applyDeviceProfile(app, filterPathIn);
     g_optimization_thread = std::thread(
         runOptimizationThread,
         filterPathIn,

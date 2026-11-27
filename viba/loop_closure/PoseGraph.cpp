@@ -517,6 +517,9 @@ bool PoseGraph::solve(const GncSettings& gnc, int numThreads) {
   s.log = nullptr;
   s.damping = 1e-4;
   s.dampingMin = 1e-12;
+  // (as in the real-data runs, made when the environment's VIBA_DAMPING_GOOD=0.1 set this for every
+  // optimizer call)
+  s.dampingAdjustOnGoodStep = 0.1;
   auto run = [&](int iterations) {
     s.maxNumIterations = iterations;
     const auto summary = opt_.optimize(s);

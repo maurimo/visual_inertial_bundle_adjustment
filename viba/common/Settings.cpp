@@ -7,8 +7,11 @@
 
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 #include <viba/common/Settings.h>
 #include <exception>
+#include <fstream>
+#include <iostream>
 #include <optional>
 
 #include <logging/Checks.h>
@@ -26,6 +29,15 @@ constexpr char ImuEstArgSpec[] =
     "  all-but-biases|all-but-biases-and-scales|all-non-orths|all-time-offsets";
 
 void InitSettings::addCommandLine(CLI::App& app) {
+  app.add_option(
+         "--profile",
+         profile,
+         "Device profile, the defaults of the options that depend on the device (options given "
+         "here are kept). aria (Project Aria glasses, LaMAria): --pls-scale 1, --imu-half-sample 1, "
+         "--earth-rate-up 5.365e-5 (Zurich); generic (eg TUM-VI, EuRoC): all three 0. auto "
+         "(default): aria when the factory calibration has the cameras camera-slam-left and "
+         "camera-slam-right, generic otherwise")
+      ->check(CLI::IsMember({"auto", "aria", "generic"}));
   app.add_option(
          "--imu-calib-rw-infl",
          imuRWinflate,
@@ -209,12 +221,12 @@ void InitSettings::addCommandLine(CLI::App& app) {
          imuHalfSample,
          "Factory IMU time offsets are instantaneous sample times: use them minus half a sample "
          "period, as the pre-integration holds a sample over the interval ending at it "
-         "(default: 1)");
+         "(default: profile, aria 1, generic 0)");
   app.add_option(
          "--accel-later-ms",
          accelLaterMs,
-         "The accelerometer samples are this much later than the factory time offset says "
-         "(default: 0)");
+         "The accelerometer samples are this much later than the factory time offset says [ms]; "
+         "per device (default: 0)");
   app.add_option(
          "--sky-from-pass", skyFromPass, "First pass that leaves out sky points (default: 2)")
       ->group("Sky points");
@@ -249,8 +261,9 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_option(
          "--earth-rate-up",
          earthRateUp,
-         "Rotation of the Earth about the local vertical [rad/s], 7.292e-5 * sin(latitude); 0: not "
-         "modelled (default: 5.365e-5, the value at 47.4 deg north)")
+         "Rotation of the Earth about the local vertical [rad/s], 7.292e-5 * sin(latitude): depends "
+         "on the location of the recording; 0: not modelled (default: profile, aria 5.365e-5, the "
+         "value at 47.4 deg north (Zurich, LaMAria); generic 0)")
       ->group("Gravity");
   app.add_option(
          "--scale-knot-sec",
@@ -305,9 +318,9 @@ void InitSettings::addCommandLine(CLI::App& app) {
          "--pls-scale",
          plsScale,
          "Parasitic light row time of the Aria SLAM cameras: scale of the model's time (1: the "
-         "model; default: 0, off; needs expo_cam<k>.csv)")
+         "model, 0: off; default: profile, aria 1, generic 0; off without expo_cam<k>.csv)")
       ->group("Parasitic light");
-  app.add_option("--pls-eps", plsEps, "Parasitic light sensitivity (default: 1/90)")
+  app.add_option("--pls-eps", plsEps, "Parasitic light sensitivity (default: 1/89)")
       ->group("Parasitic light");
   app.add_option(
          "--pls-t0-ms",
@@ -319,24 +332,12 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_option(
          "--pls-smear-px",
          plsSmearPx,
-         "Correlation length of photometric patches [pixels] (default: 1.2; 0: no attenuation)")
+         "Correlation length of photometric patches [pixels] (default: 0.8; 0: no attenuation)")
       ->group("Parasitic light");
   app.add_option(
          "--pls-smear-corner-px",
          plsSmearCornerPx,
          "Correlation length of corner tracks [pixels] (default: 5; 0: no attenuation)")
-      ->group("Parasitic light");
-  app.add_option(
-         "--pls-motion",
-         plsMotion,
-         "Motion of the body over the model's time: 0 full with Jacobians, 1 without the "
-         "Jacobians on velocity and attitude, 2 rotation only (default: 0)")
-      ->group("Parasitic light");
-  app.add_option(
-         "--pls-linear-us-per-row",
-         plsLinearUsPerRow,
-         "Test: a plain row skew of this many microseconds per row about the image centre instead "
-         "of the model (default: 0, off)")
       ->group("Parasitic light");
   app.add_option(
          "--pls-dir",
@@ -354,16 +355,75 @@ void InitSettings::addCommandLine(CLI::App& app) {
   app.add_flag("--no-rgb", noRgb, "Map KeyRigs were not constructed using RGB images");
 }
 
+// A Project Aria (Gen1) recording: the factory calibration has the two SLAM cameras
+static bool isAriaRecording(const std::filesystem::path& inputDir, std::string& why) {
+  const std::filesystem::path path = inputDir / "factory_calibration.json";
+  std::ifstream ifs(path);
+  if (!ifs) {
+    why = "no " + path.string();
+    return false;
+  }
+  bool left = false, right = false;
+  try {
+    const auto json = nlohmann::json::parse(ifs);
+    if (json.contains("CameraCalibrations")) {
+      for (const auto& cam : json["CameraCalibrations"]) {
+        const std::string label = cam.value("Label", "");
+        left = left || label == "camera-slam-left";
+        right = right || label == "camera-slam-right";
+      }
+    }
+  } catch (const std::exception& e) {
+    why = fmt::format("{} not readable ({})", path.string(), e.what());
+    return false;
+  }
+  why = left && right ? "factory calibration has camera-slam-left and camera-slam-right"
+                      : "factory calibration has no camera-slam-left and camera-slam-right";
+  return left && right;
+}
+
+std::string InitSettings::applyDeviceProfile(
+    const CLI::App& app,
+    const std::filesystem::path& inputDir) {
+  std::string used = profile, why = "given";
+  if (profile == "auto") {
+    used = isAriaRecording(inputDir, why) ? "aria" : "generic";
+    why = "auto: " + why;
+  }
+  const bool aria = used == "aria";
+  std::string set, kept;
+  auto setDefault = [&](const char* name, auto& field, auto value) {
+    if (app.get_option(name)->count() > 0) {
+      kept += fmt::format("{}{} {}", kept.empty() ? "" : ", ", name, field);
+      return;
+    }
+    field = value;
+    set += fmt::format("{}{} {}", set.empty() ? "" : ", ", name, value);
+  };
+  setDefault("--pls-scale", plsScale, aria ? 1.0 : 0.0);
+  setDefault("--imu-half-sample", imuHalfSample, aria);
+  setDefault("--earth-rate-up", earthRateUp, aria ? 5.365e-5 : 0.0);
+  std::cout << fmt::format(
+                   "Device profile: {} ({}); {}{}{}",
+                   used,
+                   why,
+                   set.empty() ? "nothing set" : set,
+                   kept.empty() ? "" : "; given: ",
+                   kept)
+            << std::endl;
+  return used;
+}
+
 using namespace small_thing;
 
-static std::unordered_map<std::string, std::optional<Optimizer::SolverType>> argToSolver{
+static std::unordered_map<std::string, Optimizer::SolverType> argToSolver{
     {"direct", Optimizer::Solver_Direct},
+    {"auto", Optimizer::Solver_Direct}, // (formerly: iterative from 20000 key rigs on)
     {"gauss-seidel", Optimizer::Solver_PCG_GaussSeidel},
     {"jacobi", Optimizer::Solver_PCG_Jacobi},
     {"lower-prec", Optimizer::Solver_PCG_LowerPrecSolve},
-    {"auto", {}},
 };
-static const char* solverArgs = "auto|direct|gauss-seidel|jacobi|lower-prec";
+static const char* solverArgs = "direct|auto|gauss-seidel|jacobi|lower-prec";
 
 void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, bool skipAdvanced) {
   app.add_option(
@@ -375,7 +435,10 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
          "Check the analytic Jacobians of all factors against finite differences before optimizing")
       ->group(group);
   app.add_option(
-         "--linear-solver", linearSolverArg, "Linear solver (" + std::string(solverArgs) + ")")
+         "--linear-solver",
+         linearSolverArg,
+         "Linear solver (" + std::string(solverArgs) +
+             "; default: direct, and auto is direct: no automatic switch to an iterative solver)")
       ->group(group);
   app.add_option(
          "--pcg-max-iterations",
@@ -386,9 +449,38 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
       ->group(group);
   app.add_option("--num-threads", numThreads, "Number of threads to use for optimization")
       ->group(group);
-  app.add_option("--initial-damping", initialDamping, "Initial damping (default: 1e-5)")
+  app.add_option(
+         "--initial-damping", initialDamping, "Damping at the start of the first pass (default: 1e-5)")
       ->group(group);
-  app.add_option("--min-damping", minDamping, "Lowest damping (default: 1e-9)")->group(group);
+  app.add_option(
+         "--later-pass-initial-damping",
+         laterPassInitialDamping,
+         "Damping at the start of the passes after the first (default: 1e-9)")
+      ->group(group);
+  app.add_option("--min-damping", minDamping, "Lowest damping (default: 1e-11)")->group(group);
+  app.add_option(
+         "--damping-good-factor",
+         dampingGoodFactor,
+         "The damping is multiplied by this after a good step (default: 0.1)")
+      ->group(group);
+  app.add_option(
+         "--relative-cost-tolerance",
+         relativeCostTolerance,
+         "Converged when the cost falls by less than this fraction (counts at the damping floor "
+         "only, 3 iterations in a row; default: 1e-8)")
+      ->group(group);
+  app.add_option(
+         "--absolute-cost-tolerance",
+         absoluteCostTolerance,
+         "Converged when the cost falls by less than this (as the relative tolerance; default: "
+         "0.02)")
+      ->group(group);
+  app.add_option(
+         "--stop-step-mm",
+         stopStepMm,
+         "Converged when an iteration moves no key rig by more than this [mm] (as the cost "
+         "tolerances; default: 0.5; 0: off)")
+      ->group(group);
   if (!skipAdvanced) {
     app.add_option(
            "--debug-nonlinearities-at",
@@ -402,40 +494,20 @@ void OptimizerSettings::addCommandLine(CLI::App& app, const std::string& group, 
   });
 }
 
-Optimizer::Settings OptimizerSettings::getSettings(int numRigs, bool muted) const {
+Optimizer::Settings OptimizerSettings::getSettings(int pass) const {
   auto solverIt = argToSolver.find(linearSolverArg);
   XR_CHECK(solverIt != argToSolver.end(), "Linear solver option must be one of: {}", solverArgs);
-  auto linearSolver = solverIt->second;
 
-  if (!linearSolver.has_value()) {
-    linearSolver = numRigs >= kNumRigsForIterative ? Optimizer::Solver_PCG_GaussSeidel
-                                                   : Optimizer::Solver_Direct;
-    if (!muted) {
-      XR_LOGI(
-          "Linear solver automatically set to '{}' (numRigs: {}, threshold for iterative: {})",
-          Optimizer::solverToString(*linearSolver),
-          numRigs,
-          kNumRigsForIterative);
-    }
-  }
-
-  // Stopping and damping schedule (optimizer defaults: relative cost tolerance 1e-10, damping x0.7
-  // per good step, tolerances active at any damping). With the defaults a run spends most of its
-  // iterations after the result is final (sub-millimeter changes), while the joint corrections of
-  // trajectory and points (scale, heading) only happen once the damping has decayed from 1e-5 to
-  // about 1e-8, i.e. after 20-30 iterations. Hence: the damping comes down by 3 per good step, and
-  // a looser cost tolerance that only counts once the damping is at its floor.
-  constexpr double kRelativeCostTolerance = 1e-8;
-  constexpr double kDampingAdjustOnGoodStep = 1.0 / 3.0;
-
+  // (see the header for the damping and stopping schedule)
   return {
       .maxNumIterations = maxNumIterations,
       .numThreads = numThreads,
-      .solverType = *linearSolver,
+      .solverType = solverIt->second,
       .pcgMaxIterations = pcgMaxIterations,
-      .relativeCostTolerance = kRelativeCostTolerance,
-      .damping = initialDamping,
-      .dampingAdjustOnGoodStep = kDampingAdjustOnGoodStep,
+      .absoluteCostTolerance = absoluteCostTolerance,
+      .relativeCostTolerance = relativeCostTolerance,
+      .damping = pass > 1 ? laterPassInitialDamping : initialDamping,
+      .dampingAdjustOnGoodStep = dampingGoodFactor,
       .dampingMin = minDamping,
       .stopOnlyAtDampingFloor = true,
       .triggerDebuggingOfNonlinearities = triggerDebuggingOfNonlinearities,

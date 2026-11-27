@@ -350,7 +350,6 @@ class SingleSessionAdapter {
   double plsT0Sec_ = 0.0;
   double plsRowSec_ = 0.0;
   double plsSmearPx_[2] = {0.0, 0.0};
-  double plsLinearSecPerRow_ = 0.0;
   std::vector<std::vector<std::pair<int64_t, double>>> plsExposure_; // per camera: (us, s)
   std::vector<int8_t> plsKinds_; // per row of the observations (empty: unknown)
   std::vector<PlsObservation> plsObs_;

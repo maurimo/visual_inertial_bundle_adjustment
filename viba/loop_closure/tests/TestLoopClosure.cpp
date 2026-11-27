@@ -574,3 +574,39 @@ TEST(PoseGraph, Jacobians) {
     }
   }
 }
+
+// The pose graph's correspondences from loop tracks (as tools/viba_lc/lc_split_viba_input.py):
+// pairs between consecutive visits only, the first n of the product in time order.
+TEST(MatchSource, FromLoopTracks) {
+  std::vector<LoopTrackObs> obs;
+  auto add = [&](int64_t track, int visit, int64_t t, int cam, double u) {
+    LoopTrackObs o;
+    o.track = track;
+    o.visit = visit;
+    o.tUs = t;
+    o.cam = cam;
+    o.px = Vec2(u, 0.0);
+    obs.push_back(o);
+  };
+  // track 1: visits 0 (2 obs), 1 (3 obs), 2 (1 obs); track 2: visit 0 and 2 only (no pair)
+  add(1, 1, 5000, 0, 10.0);
+  add(1, 0, 1000, 0, 1.0);
+  add(1, 0, 1100, 1, 2.0);
+  add(1, 1, 5100, 1, 11.0);
+  add(1, 1, 5200, 0, 12.0);
+  add(1, 2, 9000, 0, 20.0);
+  add(2, 0, 1000, 0, 3.0);
+  add(2, 2, 9000, 1, 30.0);
+  const auto all = CsvMatchSource::fromLoopTracks(obs, 0);
+  EXPECT_EQ(all->numCorrespondences(), 2u * 3u + 3u * 1u);
+  const auto capped = CsvMatchSource::fromLoopTracks(obs, 4);
+  EXPECT_EQ(capped->numCorrespondences(), 4u + 3u);
+  // capped: the first observation of visit 0 with all three of visit 1, then the second with one
+  const auto m = capped->matches(1000, 5000);
+  ASSERT_EQ(m.size(), 1u);
+  EXPECT_EQ(m[0].pxB.size(), 1u);
+  EXPECT_EQ(capped->matches(1100, 5000).size(), 1u);
+  EXPECT_TRUE(capped->matches(1100, 5100).empty());
+  EXPECT_TRUE(capped->matches(1000, 9000).empty());
+  EXPECT_EQ(capped->partnersBefore(9000).size(), 3u);
+}

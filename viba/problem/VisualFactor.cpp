@@ -219,16 +219,6 @@ struct RollingShutterVisualFactor {
   const double* extraDtSec_;
 };
 
-// How the per-observation time (addObservationTimeShift) moves the body, see
-// InitSettings::plsMotion. 0: as a rolling shutter does (the motion of the body from the inertial
-// samples, the velocity and gravity, with all its Jacobians); 1: the same motion, but velocity and
-// attitude are not pulled by it (no Jacobian of the motion on them: the model is a shift of the
-// observation, as in the filter this model comes from); 2: rotation only.
-int gTimeShiftMotion = 0;
-void setTimeShiftMotion(int mode) {
-  gTimeShiftMotion = mode;
-}
-
 // The pose of the body at the time an observation was taken (its image row and the time offset of
 // the camera) from the pose at the time of the frame, with what the rolling-shutter factors for
 // points expressed in a host rig need of its derivatives. Same model as RollingShutterVisualFactor.
@@ -248,12 +238,7 @@ struct RollingShutterShift {
     const RollingShutterEstimate shiftedEst =
         rsData.getEstimate(dtSec, vel_world, T_bodyImu_world.inverse(), false);
     T_bodyImuAtT_bodyImuMid = shiftedEst.T_midImu_imuAtT.inverse();
-    const int motion = extraDtSec != nullptr ? gTimeShiftMotion : 0;
-    if (motion == 2) {
-      T_bodyImuAtT_bodyImuMid.translation().setZero();
-    }
     T_bodyImuAtT_world = T_bodyImuAtT_bodyImuMid * T_bodyImu_world;
-    velocityScale = motion == 0 ? 1.0 : 0.0;
     // The part of the displacement that turns with the body, u = R_mid_world * (v dt + g dt^2 / 2):
     // T_bodyImuMid_bodyImuAtT has the translation (inertial part) + u, so that with the pose at
     // the frame's time perturbed on the left by (dt, dw) the shift T_bodyImuAtT_bodyImuMid is
@@ -264,18 +249,12 @@ struct RollingShutterShift {
         SO3::hat(
             T_bodyImu_world.so3() *
             (vel_world * dtSec + 0.5 * dtSec * dtSec * rsData.gravityWorld()));
-    if (motion != 0) {
-      dShift_dRotMid.setZero();
-    }
 
     constexpr double kEpsilon = 1e-6;
     const RollingShutterEstimate shiftedEstP =
         rsData.getEstimate(dtSec + kEpsilon, vel_world, T_bodyImu_world.inverse(), false);
     dPose_dTime = (shiftedEstP.T_midImu_imuAtT.inverse() * shiftedEst.T_midImu_imuAtT).log() /
         kEpsilon; /* NUMERIC */
-    if (motion == 2) {
-      dPose_dTime.head<3>().setZero();
-    }
   }
 
   static bool hasTimeColumns(const CameraModelParam& cameraModel) {
@@ -299,7 +278,7 @@ struct RollingShutterShift {
 
   Mat23 velocityJacobian(const Mat26& poseAtT_Jacobian) const {
     return poseAtT_Jacobian.leftCols<3>() * T_bodyImuAtT_world.so3().matrix() *
-        (-dtSec * velocityScale);
+        (-dtSec);
   }
 
   double timeParamFactor;
@@ -307,7 +286,6 @@ struct RollingShutterShift {
   SE3 T_bodyImuAtT_bodyImuMid;
   SE3 T_bodyImuAtT_world;
   Mat33 dShift_dRotMid;
-  double velocityScale = 1.0;
   Vec6 dPose_dTime;
 };
 

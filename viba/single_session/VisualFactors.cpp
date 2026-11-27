@@ -303,14 +303,12 @@ void SingleSessionAdapter::plsInit(const InitSettings& s) {
     }
   }
   plsOn_ = true;
-  setTimeShiftMotion(s.plsMotion);
   plsScale_ = s.plsScale;
   plsEps_ = s.plsEps;
   plsT0Sec_ = s.plsT0Ms * 1e-3;
   plsRowSec_ = s.plsRowUs * 1e-6;
   plsSmearPx_[0] = s.plsSmearCornerPx;
   plsSmearPx_[1] = s.plsSmearPx;
-  plsLinearSecPerRow_ = s.plsLinearUsPerRow * 1e-6;
 
   // kinds of the observations: one line per observation, `frame, id, camera, kind`
   plsKinds_.clear();
@@ -442,10 +440,6 @@ void SingleSessionAdapter::plsUpdate() {
       att = smearAttenuation(speed * wRow / ell, plsEps_ * wRow / te);
     }
     time *= att;
-    if (plsLinearSecPerRow_ != 0.0) { // test: a plain row skew
-      time = plsLinearSecPerRow_ * (row - 239.5);
-      att = 1.0;
-    }
     *o.shiftSec = plsScale_ * time;
 
     sumTime += time;

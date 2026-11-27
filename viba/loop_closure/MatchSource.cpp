@@ -156,4 +156,47 @@ bool loadLoopTracks(const std::string& path, std::vector<LoopTrackObs>& out, std
   return true;
 }
 
+std::unique_ptr<CsvMatchSource> CsvMatchSource::fromLoopTracks(
+    const std::vector<LoopTrackObs>& obs,
+    int maxPairsPerVisitPair) {
+  auto src = std::make_unique<CsvMatchSource>();
+  // per track, its observations in time order (ties: in the order given)
+  std::map<int64_t, std::vector<const LoopTrackObs*>> tracks;
+  for (const auto& o : obs) {
+    tracks[o.track].push_back(&o);
+  }
+  for (auto& [_, rows] : tracks) {
+    std::stable_sort(rows.begin(), rows.end(), [](const LoopTrackObs* a, const LoopTrackObs* b) {
+      return a->tUs < b->tUs;
+    });
+    int maxVisit = 0;
+    for (const auto* r : rows) {
+      maxVisit = std::max(maxVisit, r->visit);
+    }
+    for (int va = 0; va < maxVisit; va++) {
+      int n = 0;
+      for (const auto* a : rows) {
+        if (a->visit != va) {
+          continue;
+        }
+        for (const auto* b : rows) {
+          if (b->visit != va + 1) {
+            continue;
+          }
+          if (maxPairsPerVisitPair > 0 && n >= maxPairsPerVisitPair) {
+            break;
+          }
+          if (a->tUs <= b->tUs) {
+            src->add(a->tUs, a->cam, b->tUs, b->cam, a->px, b->px);
+          } else {
+            src->add(b->tUs, b->cam, a->tUs, a->cam, b->px, a->px);
+          }
+          n++;
+        }
+      }
+    }
+  }
+  return src;
+}
+
 } // namespace visual_inertial_ba::loop
